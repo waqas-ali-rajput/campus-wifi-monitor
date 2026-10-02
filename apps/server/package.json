@@ -8,6 +8,7 @@
     "build": "node build.mjs",
     "migrate": "tsx scripts/migrate.ts",
     "seed": "tsx scripts/seed.ts",
+    "bootstrap-admin": "tsx scripts/bootstrap-admin.ts",
     "reset": "tsx scripts/reset.ts",
     "simulate": "tsx scripts/simulate.ts",
     "simulate:outage": "tsx scripts/simulate-outage.ts",

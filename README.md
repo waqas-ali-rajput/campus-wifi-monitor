@@ -51,7 +51,22 @@ Copy `.env.example` to `.env` to change the port, timezone (`CAMPUS_TZ`), quick 
 
 This Vercel configuration is **demo-only** and deliberately keeps SQLite unchanged. Vercel Functions use temporary, per-instance storage, so accounts, login sessions, tests, complaints, and settings may reset or differ between requests/instances. Live SSE updates and in-process scheduled refresh jobs are disabled. Do not enter real or sensitive data. For persistent campus use, deploy the single Node server on a host with durable storage or migrate to a shared managed database.
 
-To try the demo, push this repository to GitHub/GitLab, import it in Vercel using this repository root, and set `NODE_ENV=production`, a random `JWT_SECRET` (32+ characters), `TRUST_PROXY_HOPS=1`, and `VERCEL_DEMO_MODE=true`. The Vercel build runs `npm run build`; it does not seed the database. Create a temporary admin only if needed, and expect all database contents to disappear when the function instance is recycled. Vercel CLI deployment is not configured until the repository is connected to your Vercel team.
+To try the demo, push this repository to GitHub/GitLab, import it in Vercel using this repository root, and set `NODE_ENV=production`, a random `JWT_SECRET` (32+ characters), `TRUST_PROXY_HOPS=1`, and `SERVERLESS_DEMO_MODE=true`. The Vercel build runs `npm run build`; it does not seed the database. Create a temporary admin only if needed, and expect all database contents to disappear when the function instance is recycled. Vercel CLI deployment is not configured until the repository is connected to your Vercel team.
+
+## Creating the demo accounts on a fresh deployment
+
+A new deployment starts with an empty database, so `admin@campus.local` and the other demo accounts do not exist yet. Create them with the one-time bootstrap command instead of seeding publicly-known passwords:
+
+```bash
+BOOTSTRAP_ADMIN_PASSWORD='…'    \
+BOOTSTRAP_MANAGER_PASSWORD='…'  \
+BOOTSTRAP_IT_PASSWORD='…'       \
+BOOTSTRAP_IT2_PASSWORD='…'      \
+BOOTSTRAP_STUDENT_PASSWORD='…'  \
+npm run bootstrap-admin
+```
+
+It creates `admin@campus.local`, `manager@campus.local`, `it1@campus.local`, `it2@campus.local`, and `student01@campus.local`. Every password is supplied by you, so nothing guessable ships to a public URL. Missing any variable aborts the command before creating anything, and existing accounts are never overwritten — re-running will not reset a password you have changed in the app. On Render, run it from **Shell**; on Vercel, note that its disposable filesystem erases these accounts, so prefer Render for real use.
 
 ## Five-minute demo script
 
