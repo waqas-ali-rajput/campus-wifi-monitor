@@ -1,14 +1,14 @@
 {
   "version": 2,
-  "buildCommand": "npm run build",
+  "buildCommand": "npm run build && node build-function.mjs",
   "outputDirectory": "apps/web/dist",
   "functions": {
-    "api/[...path].ts": {
-      "includeFiles": "apps/server/migrations/**",
+    "api/index.js": {
       "maxDuration": 60
     }
   },
   "rewrites": [
+    { "source": "/api/:path*", "destination": "/api" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

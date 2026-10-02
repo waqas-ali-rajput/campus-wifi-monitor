@@ -6,8 +6,12 @@ import {
   DEFAULT_OUTAGE_CONFIG,
 } from '@campus/shared';
 import type { Db } from './connection';
+// Generated for serverless bundles; empty during normal local/CLI builds.
+import { EMBEDDED_MIGRATIONS } from './migrations.generated';
 
 export function migrationsDir(): string {
+  const override = process.env.MIGRATIONS_DIR;
+  if (override) return override;
   const candidates = [
     path.resolve(__dirname, '../../../migrations'), // src/infrastructure/db
     path.resolve(__dirname, '../migrations'), // dist/
@@ -16,17 +20,23 @@ export function migrationsDir(): string {
   return candidates.find((c) => existsSync(c)) ?? candidates[0]!;
 }
 
-/** Applies NNN_name.sql files in order inside a transaction; tracked in _migrations. Idempotent. */
+/**
+ * Applies NNN_name.sql files in order inside a transaction; tracked in _migrations. Idempotent.
+ * Serverless bundles embed the SQL (see build-function.mjs) so no migration files must ship.
+ */
 export function migrate(db: Db, dir = migrationsDir()): string[] {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`);
   const done = new Set(db.prepare('SELECT name FROM _migrations').all().map((r: any) => r.name as string));
-  const files = readdirSync(dir)
-    .filter((f) => /^\d{3}_.*\.sql$/.test(f))
-    .sort();
+  const embedded = EMBEDDED_MIGRATIONS;
+  const files = Object.keys(embedded).length
+    ? Object.keys(embedded).sort()
+    : readdirSync(dir)
+        .filter((f) => /^\d{3}_.*\.sql$/.test(f))
+        .sort();
   const applied: string[] = [];
   for (const f of files) {
     if (done.has(f)) continue;
-    const sql = readFileSync(path.join(dir, f), 'utf8');
+    const sql = embedded[f] ?? readFileSync(path.join(dir, f), 'utf8');
     db.transaction(() => {
       db.exec(sql);
       db.prepare('INSERT INTO _migrations(name, applied_at) VALUES (?, ?)').run(f, new Date().toISOString());

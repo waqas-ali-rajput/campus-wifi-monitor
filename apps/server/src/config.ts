@@ -68,6 +68,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   if (env.NODE_ENV === 'production' && !env.JWT_SECRET) throw new Error('JWT_SECRET must be configured in production.');
   if (env.DISABLE_RATE_LIMIT) throw new Error('Rate limiting cannot be disabled.');
   if (env.JWT_SECRET && env.JWT_SECRET.length < 32) throw new Error('JWT_SECRET must contain at least 32 characters.');
+  if (env.SERVERLESS_DEMO_MODE && env.NODE_ENV === 'production') throw new Error('SERVERLESS_DEMO_MODE cannot be used in production.');
   const tz = env.CAMPUS_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const dbPath = env.SERVERLESS_DEMO_MODE ? '/tmp/campus-wifi-demo.db' : env.DB_PATH === ':memory:' ? ':memory:' : path.resolve(ROOT, env.DB_PATH);
   return {

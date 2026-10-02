@@ -1,8 +1,12 @@
+import path from 'node:path';
 import { loadConfig } from '../apps/server/src/config';
 import { createContainer } from '../apps/server/src/container';
 import { createApp } from '../apps/server/src/http/app';
 
 let handler: ReturnType<typeof createApp> | undefined;
+
+// Migrations are copied to `api/migrations` beside this bundle; point the server at them.
+process.env.MIGRATIONS_DIR ??= path.join(__dirname, 'migrations');
 
 /**
  * Builds the Express app once per warm function instance.
