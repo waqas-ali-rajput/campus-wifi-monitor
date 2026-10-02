@@ -1,8 +1,13 @@
 /**
  * Demo data seeder (§12). Everything created here is flagged is_seed = 1 (tests, complaints).
  * Scores are computed with the real domain function (computeHealth) — never hard-coded.
- * Usage: npm run seed            (refuses if users already exist)
- *        npm run seed -- --force (wipes all data first)
+ * Usage: npm run seed                (refuses if users already exist)
+ *        npm run seed -- --force     (wipes all data first)
+ *        npm run seed -- --accounts  (skip user creation; add demo history to existing accounts)
+ *
+ * On a real deployment, create the demo accounts first with `npm run bootstrap-admin`,
+ * then run `npm run seed -- --accounts` to fill the dashboards without shipping the
+ * publicly known demo password.
  */
 import { classifyComplaint, computeHealth, type ComplaintStatus, type ComplaintType } from '@campus/shared';
 import { loadConfig } from '../src/config';
@@ -15,11 +20,16 @@ const PASSWORD = 'Passw0rd!demo';
 const r = rng();
 const uuid = () => crypto.randomUUID();
 
-export function seed(c: Container, opts: { force?: boolean; quiet?: boolean } = {}) {
+export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; accounts?: boolean } = {}) {
   const db = c.db;
   const userCount = (db.prepare('SELECT COUNT(*) n FROM users').get() as any).n;
-  if (userCount > 0 && !opts.force) {
-    if (!opts.quiet) console.log('Seed skipped: users already exist. Use "npm run seed -- --force" or "npm run reset" to start over.');
+  if (opts.accounts) {
+    if (userCount === 0) {
+      if (!opts.quiet) console.error('Seed stopped: no users exist. Run "npm run bootstrap-admin" (or "npm run seed") first.');
+      return false;
+    }
+  } else if (userCount > 0 && !opts.force) {
+    if (!opts.quiet) console.log('Seed skipped: users already exist. Use "npm run seed -- --force", "npm run seed -- --accounts", or "npm run reset" to start over.');
     return false;
   }
   const now = c.clock.now();
@@ -34,9 +44,12 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean } = 
     }
 
     // ---- users (§12.1) ----
+    // With --accounts the demo accounts already exist (bootstrap-admin), so reuse them.
     const hash = hashPassword(PASSWORD);
-    const addUser = (id: string, name: string, email: string, role: string) =>
+    const addUser = (id: string, name: string, email: string, role: string) => {
+      if (opts.accounts && c.repos.users.byId(id)) return;
       db.prepare('INSERT INTO users(user_id, name, email, password_hash, role, created_at) VALUES (?,?,?,?,?,?)').run(id, name, email, hash, role, new Date(now.getTime() - 30 * 864e5).toISOString());
+    };
     addUser('u-admin', 'Imran Qureshi', 'admin@campus.local', 'admin');
     addUser('u-manager', 'Nadia Hussain', 'manager@campus.local', 'manager');
     addUser('u-it1', 'Kamran Javed', 'it1@campus.local', 'it_staff');
@@ -52,6 +65,7 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean } = 
     for (const p of PROFILES) {
       const id = 'loc-' + p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       locId.set(p.name, id);
+      if (opts.accounts && c.repos.locations.byId(id)) continue;
       c.repos.locations.insert({
         location_id: id, location_name: p.name, building: p.building, floor: p.floor, description: p.description,
         map_x: p.map[0], map_y: p.map[1], latitude: null, longitude: null, created_at: new Date(now.getTime() - 30 * 864e5).toISOString(),
@@ -232,19 +246,23 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean } = 
     (SELECT COUNT(*) FROM complaints WHERE status <> 'resolved') open, (SELECT COUNT(*) FROM insights WHERE is_active = 1) insights`).get() as any;
   if (!opts.quiet) {
     console.log(`\nSeeded ${counts.tests} speed tests, ${counts.complaints} complaints (${counts.open} open), ${counts.insights} active insights.`);
-    console.log('\nDemo accounts (password for all: Passw0rd!demo) — change these before any real use:');
-    console.log('  admin@campus.local      Administrator');
-    console.log('  manager@campus.local    Network / IT Manager');
-    console.log('  it1@campus.local        IT Support Staff (Kamran Javed)');
-    console.log('  it2@campus.local        IT Support Staff (Saima Akhtar)');
-    console.log('  student01@campus.local … student12@campus.local   Students\n');
+    if (opts.accounts) {
+      console.log('\nDemo history added to the existing accounts. Their passwords are the ones you set with bootstrap-admin.');
+    } else {
+      console.log('\nDemo accounts (password for all: Passw0rd!demo) — change these before any real use:');
+      console.log('  admin@campus.local      Administrator');
+      console.log('  manager@campus.local    Network / IT Manager');
+      console.log('  it1@campus.local        IT Support Staff (Kamran Javed)');
+      console.log('  it2@campus.local        IT Support Staff (Saima Akhtar)');
+      console.log('  student01@campus.local … student12@campus.local   Students\n');
+    }
   }
   return true;
 }
 
 if (require.main === module) {
   const c = createContainer(loadConfig());
-  seed(c, { force: process.argv.includes('--force') });
+  seed(c, { force: process.argv.includes('--force'), accounts: process.argv.includes('--accounts') });
   c.sse.close();
   c.db.close();
 }

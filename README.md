@@ -66,7 +66,15 @@ BOOTSTRAP_STUDENT_PASSWORD='…'  \
 npm run bootstrap-admin
 ```
 
-It creates `admin@campus.local`, `manager@campus.local`, `it1@campus.local`, `it2@campus.local`, and `student01@campus.local`. Every password is supplied by you, so nothing guessable ships to a public URL. Missing any variable aborts the command before creating anything, and existing accounts are never overwritten — re-running will not reset a password you have changed in the app. On Render, run it from **Shell**; on Vercel, note that its disposable filesystem erases these accounts, so prefer Render for real use.
+It creates `admin@campus.local`, `manager@campus.local`, `it1@campus.local`, `it2@campus.local`, and `student01@campus.local`. Every password is supplied by you, so nothing guessable ships to a public URL. Missing any variable aborts the command before creating anything, and existing accounts are never overwritten — re-running will not reset a password you have changed in the app.
+
+To also fill the dashboards with 14 days of demo speed tests, complaints, and insights, run this afterwards:
+
+```bash
+npm run seed -- --accounts
+```
+
+This reuses the accounts created above and leaves their passwords untouched. On Render, run both commands from **Shell**; on Vercel, note that its disposable filesystem erases these accounts, so prefer Render for real use.
 
 ## Five-minute demo script
 
