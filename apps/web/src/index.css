@@ -1,0 +1,35 @@
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans-condensed/500.css';
+@import '@fontsource/ibm-plex-sans-condensed/600.css';
+@import '@fontsource/ibm-plex-sans-condensed/700.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body { @apply bg-paper text-ink font-sans antialiased; font-size: 15px; line-height: 1.5; }
+  :focus-visible { outline: 2px solid #1f62c4; outline-offset: 2px; border-radius: 4px; }
+  h1, h2, h3 { @apply text-ink; letter-spacing: -0.01em; }
+  .num { font-variant-numeric: tabular-nums; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+}
+
+@layer components {
+  .card { @apply bg-surface rounded-xl border border-line shadow-card; }
+  .input {
+    @apply w-full rounded-lg border border-line-strong bg-white px-3 py-2 text-[15px] text-ink placeholder:text-ink-4
+      focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:bg-paper;
+  }
+  .label { @apply block text-[13px] font-medium text-ink-2 mb-1; }
+  .table-base { @apply w-full text-left text-sm; }
+  .table-base th { @apply font-medium text-ink-3 text-[12.5px] px-3 py-2 border-b border-line bg-paper/60 whitespace-nowrap; }
+  .table-base td { @apply px-3 py-2.5 border-b border-line/70 align-top; }
+  .table-base tbody tr { @apply transition-colors; }
+  .table-base tbody tr.clickable { @apply cursor-pointer hover:bg-accent-soft/50; }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "campus-wifi-monitor",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Smart Campus Wi-Fi Monitoring & Network Health Dashboard",
+  "workspaces": [
+    "packages/shared",
+    "apps/server",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "npm install && npm run migrate && npm run seed && npm run build",
+    "dev": "concurrently -k -n server,web -c blue,magenta \"npm run dev -w @campus/server\" \"npm run dev -w @campus/web\"",
+    "build": "npm run build -w @campus/server && npm run build -w @campus/web",
+    "start": "node apps/server/dist/index.js",
+    "migrate": "npm run migrate -w @campus/server",
+    "seed": "npm run seed -w @campus/server",
+    "reset": "npm run reset -w @campus/server",
+    "simulate": "npm run simulate -w @campus/server",
+    "simulate:outage": "npm run simulate:outage -w @campus/server --",
+    "simulate:recover": "npm run simulate:recover -w @campus/server --",
+    "test": "vitest run",
+    "test:e2e": "npm run test:e2e -w @campus/web",
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc -p packages/shared --noEmit && tsc -p apps/server --noEmit && tsc -p apps/web --noEmit && tsc -p tsconfig.functions.json"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vercel/node": "^19.0.0",
+    "concurrently": "^9.0.1",
+    "eslint": "^8.57.0",
+    "eslint-plugin-boundaries": "^4.2.2",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.2"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true
+  }
+}

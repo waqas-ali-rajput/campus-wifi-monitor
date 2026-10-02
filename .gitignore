@@ -1,0 +1,11 @@
+node_modules
+dist
+data/*
+!data/.gitkeep
+*.log
+test-results
+playwright-report
+.env
+
+.vercel
+.env*
