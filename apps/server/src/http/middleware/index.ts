@@ -38,11 +38,15 @@ export function requireAuth(jwt: JwtService, users: UserRepo): RequestHandler {
     const token = req.cookies?.[COOKIE];
     const payload = token ? jwt.verify(token) : null;
     if (!payload) return next(new AppError('UNAUTHENTICATED', 'Please sign in to continue.'));
-    const u = users.byId(payload.sub);
-    if (!u) return next(new AppError('UNAUTHENTICATED', 'Please sign in to continue.'));
-    if (u.account_status !== 'active') return next(new AppError('FORBIDDEN', 'This account is suspended.'));
-    req.user = { user_id: u.user_id, name: u.name, email: u.email, role: u.role };
-    next();
+    users.byId(payload.sub).then(
+      (u) => {
+        if (!u) return next(new AppError('UNAUTHENTICATED', 'Please sign in to continue.'));
+        if (u.account_status !== 'active') return next(new AppError('FORBIDDEN', 'This account is suspended.'));
+        req.user = { user_id: u.user_id, name: u.name, email: u.email, role: u.role };
+        next();
+      },
+      (e) => next(e),
+    );
   };
 }
 
@@ -80,6 +84,20 @@ export function makeLimiter(enabled: boolean, opts: { windowMs: number; limit: n
   });
 }
 
+/**
+ * Postgres reports constraint and input-format violations with SQLSTATE codes. These are the
+ * client's fault (bad or conflicting input), so they map to 4xx rather than a 500.
+ */
+function postgresError(err: unknown): { status: number; code: string; message: string } | null {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== 'string' || !/^[0-9A-Z]{5}$/.test(code)) return null;
+  if (code === '23505') return { status: 409, code: 'CONFLICT', message: 'This record already exists.' };
+  if (code === '23503') return { status: 400, code: 'VALIDATION_ERROR', message: 'A referenced record does not exist.' };
+  if (code === '23514' || code === '23502') return { status: 400, code: 'VALIDATION_ERROR', message: 'The submitted values are not allowed.' };
+  if (code.startsWith('22')) return { status: 400, code: 'VALIDATION_ERROR', message: 'A submitted value has an invalid format.' };
+  return null;
+}
+
 export function errorHandler(log: { error: (o: unknown, m?: string) => void }) {
   return (err: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof ZodError) {
@@ -94,6 +112,8 @@ export function errorHandler(log: { error: (o: unknown, m?: string) => void }) {
     }
     if ((err as any)?.type === 'entity.parse.failed')
       return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Malformed JSON body.' } });
+    const pg = postgresError(err);
+    if (pg) return res.status(pg.status).json({ error: { code: pg.code, message: pg.message } });
     const requestId = (req as any).id ?? Math.random().toString(36).slice(2);
     log.error({ err, requestId }, 'Unhandled error');
     res.status(500).json({ error: { code: 'INTERNAL', message: `Something went wrong on the server (request ${requestId}).` } });

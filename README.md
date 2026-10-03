@@ -6,12 +6,18 @@ A web application for a university campus. Students and staff run a built-in Wi-
 
 ## Quick start
 
-Requirements: **Node.js 20 or newer** (22 LTS recommended). Running the internet speed test requires internet access and sends measurement traffic to Cloudflare’s edge network; Cloudflare may collect test measurements for aggregated connection-quality insights. Campus health tests use the app’s own server and remain separate from off-campus internet tests.
+Requirements: **Node.js 20 or newer** (22 LTS recommended) and a **PostgreSQL database — [Neon](https://neon.tech) is the default** (any Postgres 14+ works, including a local one). Running the internet speed test requires internet access and sends measurement traffic to Cloudflare’s edge network; Cloudflare may collect test measurements for aggregated connection-quality insights. Campus health tests use the app’s own server and remain separate from off-campus internet tests.
+
+1. Create a Neon project (free tier is fine). In the Neon console open **Connect**, keep **Connection pooling** on, and copy the connection string (its host contains `-pooler`).
+2. Copy `.env.example` to `.env` and paste it as `DATABASE_URL`.
+3. Run:
 
 ```bash
-npm run setup     # install → create database → seed demo data → build the web app
+npm run setup     # install → create tables → seed demo data → build the web app
 npm start         # serves the API and the web app on one port
 ```
+
+The schema is created automatically (from `apps/server/migrations-postgres/`) by `npm run migrate` and again, idempotently, every time the server starts.
 
 Open **http://localhost:3000**. The terminal also prints LAN addresses (for example `http://192.168.1.20:3000`). The internet speed test measures the device’s current connection to Cloudflare; it does not measure MUET Wi-Fi unless the device is physically on campus. Off-campus tests are stored in personal history and do not update campus health. Admins can also show the address as a QR code under **Administration → Share on Wi-Fi**.
 
@@ -33,25 +39,55 @@ The sign-in page also has one-click demo-account buttons.
 | Command | What it does |
 |---|---|
 | `npm run setup` | Install, migrate, seed, build |
+| `npm run migrate` | Create/upgrade the Postgres tables in `DATABASE_URL` (safe to re-run) |
+| `npm run migrate:data` | One-time copy of an old SQLite file (`data/campus-wifi.db`) into Postgres — see below |
 | `npm start` | Run the built app (`apps/server/dist/index.js`, serving `apps/web/dist`) |
 | `npm run dev` | API with hot reload on :3000 plus the Vite dev server on :5173 (proxies `/api`) |
 | `npm run build` | Build the server bundle and the web app |
 | `npm run seed` | Demo data; skips if users exist (`npm run seed -- --force` to wipe and reseed) |
-| `npm run reset` | Delete the database, migrate and seed again |
+| `npm run reset` | **Wipe all data** in `DATABASE_URL` and seed the demo data again |
 | `npm run simulate` | Post a realistic live speed test every 3 s, so the dashboard moves live |
 | `npm run simulate:outage -- --location "Library Floor 2"` | 4 students report *No Internet* and 3 tests fail → an outage opens live |
 | `npm run simulate:recover -- --location "Library Floor 2"` | 3 good tests → "Network returns to normal" |
-| `npm test` | Unit and integration tests (Vitest): domain rules, API, speed-test engine |
-| `npm run test:e2e` | Browser end-to-end flow (Playwright). Run `npm run build` first, and `npx playwright install chromium` once |
+| `npm test` | Unit and integration tests (Vitest): domain rules, API, speed-test engine. API tests need `TEST_DATABASE_URL` (see below) and are skipped without it |
+| `npm run test:e2e` | Browser end-to-end flow (Playwright). Needs `E2E_DATABASE_URL` (a disposable database — it is wiped and re-seeded). Run `npm run build` first, and `npx playwright install chromium` once |
 | `npm run lint` / `npm run typecheck` | ESLint (including the clean-architecture boundary rule) / TypeScript |
 
-Copy `.env.example` to `.env` to change the port, timezone (`CAMPUS_TZ`), quick speed-test mode, or to enable optional local-LLM rewording of the AI summary (Ollama).
+`.env` also controls the port, timezone (`CAMPUS_TZ`), quick speed-test mode, and optional local-LLM rewording of the AI summary (Ollama).
 
-## Vercel disposable demo
+## Database (Neon Postgres)
 
-This Vercel configuration is **demo-only** and deliberately keeps SQLite unchanged. Vercel Functions use temporary, per-instance storage, so accounts, login sessions, tests, complaints, and settings may reset or differ between requests/instances. Live SSE updates and in-process scheduled refresh jobs are disabled. Do not enter real or sensitive data. For persistent campus use, deploy the single Node server on a host with durable storage or migrate to a shared managed database.
+All data lives in the Postgres database named by `DATABASE_URL`, so every server instance — your laptop, Render, Vercel functions — shares the same accounts, tests and complaints.
 
-To try the demo, push this repository to GitHub/GitLab, import it in Vercel using this repository root, and set `NODE_ENV=production`, a random `JWT_SECRET` (32+ characters), `TRUST_PROXY_HOPS=1`, and `SERVERLESS_DEMO_MODE=true`. The Vercel build runs `npm run build`; it does not seed the database. Create a temporary admin only if needed, and expect all database contents to disappear when the function instance is recycled. Vercel CLI deployment is not configured until the repository is connected to your Vercel team.
+- **Which connection string:** use Neon's *pooled* string (`…-pooler.…neon.tech`) for the app. Each process opens at most `PG_POOL_MAX` connections (default 10; Vercel functions use 3).
+- **Schema changes:** add a new numbered file to `apps/server/migrations-postgres/` (e.g. `003_something.sql`). It is applied once, in order, and recorded in the `schema_migrations` table.
+- **Neon autosuspend:** a server that is running 24/7 checks the database every few seconds (live updates and scheduled jobs), which keeps the Neon compute awake. On Neon's free plan that uses compute hours continuously; Vercel (no background jobs) lets it sleep between visits.
+- **Branches:** a Neon branch is a cheap full copy of the database — handy for trying `npm run reset` or a migration without touching real data.
+
+### Moving existing SQLite data to Neon
+
+If you have been running the earlier SQLite version, copy its data across once:
+
+```bash
+DATABASE_URL='postgresql://…' npm run migrate:data
+# a different file: SQLITE_PATH=backups/old.db npm run migrate:data
+```
+
+It creates the tables, copies every table with the original IDs (so existing links and logins keep working), keeps your saved threshold settings, checks that every row count matches, and only then commits — a failure leaves Postgres untouched. It refuses to run if the Postgres database already has users or locations; add `-- --force` to wipe it and copy again. The SQLite file is opened read-only and never modified.
+
+### Running the API tests
+
+The integration tests need a Postgres database they can create schemas in. They never use `DATABASE_URL`: set `TEST_DATABASE_URL` to a **non-pooled** connection string (a Neon dev branch, or a local Postgres). Each run creates a throwaway schema and drops it afterwards.
+
+```bash
+TEST_DATABASE_URL='postgresql://…' npm test
+```
+
+## Vercel
+
+Vercel runs the API as a serverless function backed by the same Neon database, so data is persistent and shared across instances. Live SSE updates and the in-process scheduled jobs are disabled there (functions are short-lived); statuses are refreshed when a function instance starts.
+
+Import the repository in Vercel (root of this repo) and set `NODE_ENV=production`, `DATABASE_URL` (Neon pooled string — or use Vercel's Neon integration, which sets it for you), a random `JWT_SECRET` (32+ characters), `TRUST_PROXY_HOPS=1`, and `DISABLE_EVENT_STREAM=true`. The schema is created on first request. The build does not seed data; create accounts with `bootstrap-admin` (below) from your own machine with the same `DATABASE_URL`.
 
 ## Creating the demo accounts on a fresh deployment
 
@@ -74,7 +110,7 @@ To also fill the dashboards with 14 days of demo speed tests, complaints, and in
 npm run seed -- --accounts
 ```
 
-This reuses the accounts created above and leaves their passwords untouched. On Render, run both commands from **Shell**; on Vercel, note that its disposable filesystem erases these accounts, so prefer Render for real use.
+This reuses the accounts created above and leaves their passwords untouched. Because the data lives in Neon, you can run both commands from your own machine (with the production `DATABASE_URL` in `.env`) or from Render's **Shell**.
 
 ## Five-minute demo script
 

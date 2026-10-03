@@ -39,21 +39,21 @@ export class SettingsService {
     private clock: Clock,
   ) {}
 
-  health(): HealthConfig {
-    return deepMerge(DEFAULT_HEALTH_CONFIG, this.repo.get('health.config'));
+  async health(): Promise<HealthConfig> {
+    return deepMerge(DEFAULT_HEALTH_CONFIG, await this.repo.get('health.config'));
   }
-  outage(): OutageConfig {
-    return deepMerge(DEFAULT_OUTAGE_CONFIG, this.repo.get('outage.config'));
+  async outage(): Promise<OutageConfig> {
+    return deepMerge(DEFAULT_OUTAGE_CONFIG, await this.repo.get('outage.config'));
   }
-  insights(): InsightsConfig {
-    return deepMerge(DEFAULT_INSIGHTS_CONFIG, this.repo.get('insights.config'));
+  async insights(): Promise<InsightsConfig> {
+    return deepMerge(DEFAULT_INSIGHTS_CONFIG, await this.repo.get('insights.config'));
   }
 
-  list() {
+  async list() {
     return {
-      'health.config': this.health(),
-      'outage.config': this.outage(),
-      'insights.config': this.insights(),
+      'health.config': await this.health(),
+      'outage.config': await this.outage(),
+      'insights.config': await this.insights(),
       defaults: {
         'health.config': DEFAULT_HEALTH_CONFIG,
         'outage.config': DEFAULT_OUTAGE_CONFIG,
@@ -62,7 +62,7 @@ export class SettingsService {
     };
   }
 
-  update(key: string, value: unknown, actorId: string) {
+  async update(key: string, value: unknown, actorId: string) {
     if (!(key in KEYS)) throw new AppError('NOT_FOUND', `Unknown setting "${key}".`);
     const schema = KEYS[key as SettingKey];
     let parsed: any;
@@ -77,8 +77,8 @@ export class SettingsService {
       if (errs.length) throw new AppError('VALIDATION_ERROR', errs[0]!, { config: errs });
     }
     const at = this.clock.now().toISOString();
-    this.repo.set(key, parsed, at);
-    this.activity.log(actorId, 'settings.update', 'setting', key, { value: parsed }, at);
+    await this.repo.set(key, parsed, at);
+    await this.activity.log(actorId, 'settings.update', 'setting', key, { value: parsed }, at);
     return parsed;
   }
 }

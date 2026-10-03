@@ -1,31 +1,31 @@
-import path from 'node:path';
 import { loadConfig } from '../apps/server/src/config';
-import { createContainer } from '../apps/server/src/container';
+import { createContainer, warmUp } from '../apps/server/src/container';
 import { createApp } from '../apps/server/src/http/app';
 
-let handler: ReturnType<typeof createApp> | undefined;
-
-// Migrations are copied to `api/migrations` beside this bundle; point the server at them.
-process.env.MIGRATIONS_DIR ??= path.join(__dirname, 'migrations');
+let handler: Promise<ReturnType<typeof createApp>> | undefined;
 
 /**
- * Builds the Express app once per warm function instance.
- * Serverless functions have no long-lived process, so `app.listen()` and the
- * in-process scheduler are intentionally never started here.
+ * Builds the Express app once per warm function instance, against the shared Neon database.
+ * Migrations are embedded in the bundle (build-function.mjs) and applied idempotently.
+ * Serverless functions have no long-lived process, so `app.listen()` and the in-process
+ * scheduler are never started here; statuses are refreshed on each cold start instead.
  */
 export function getServerlessApp() {
-  if (handler) return handler;
-  const config = loadConfig({ host: '127.0.0.1', trustProxyHops: 1 });
-  const container = createContainer(config);
-  container.services.locations.refreshAll();
-  container.services.outages.evaluateAll();
-  container.services.insights.refreshAll();
-  handler = createApp(container, { webDist: 'apps/web/dist' });
+  handler ??= (async () => {
+    // Many concurrent function instances share one database: keep each instance's pool small.
+    const config = loadConfig({ host: '127.0.0.1', trustProxyHops: 1, pgPoolMax: Number(process.env.PG_POOL_MAX ?? 3) });
+    const container = await createContainer(config);
+    await warmUp(container);
+    return createApp(container, { webDist: 'apps/web/dist' });
+  })().catch((err) => {
+    handler = undefined; // let the next request retry instead of caching the failure
+    throw err;
+  });
   return handler;
 }
 
 const EVENT_STREAMING_UNAVAILABLE = {
-  error: { code: 'NOT_SUPPORTED', message: 'Live event streaming is unavailable in this disposable demo deployment. Refresh the page to load current data.' },
+  error: { code: 'NOT_SUPPORTED', message: 'Live event streaming is unavailable in this serverless deployment. Refresh the page to load current data.' },
 };
 
 /** Serverless function handlers answer `/api/events` directly: SSE needs a long-lived request. */

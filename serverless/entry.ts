@@ -12,10 +12,17 @@ function originalPath(req: VercelRequest): string {
 }
 
 /** Vercel function entry point. Bundled to `api/index.js` by `build-function.mjs`. */
-export default function apiHandler(req: VercelRequest, res: VercelResponse) {
+export default async function apiHandler(req: VercelRequest, res: VercelResponse) {
   const target = originalPath(req);
   if (isEventsRequest(target)) return sendUnsupportedEvents(res);
-  const app = getServerlessApp();
+  let app;
+  try {
+    app = await getServerlessApp();
+  } catch (err) {
+    console.error('Startup failed:', err);
+    res.status(503).json({ error: { code: 'UNAVAILABLE', message: 'The server could not reach its database. Try again shortly.' } });
+    return;
+  }
   // Express must see the original path/query so routing and JSON parsing match local.
   req.url = target;
   return app(req as never, res as never);

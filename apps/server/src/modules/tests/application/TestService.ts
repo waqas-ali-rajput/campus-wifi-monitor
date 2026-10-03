@@ -18,7 +18,7 @@ import type { MaintenanceService } from '../../maintenance/application/Maintenan
 import type { InsightsService } from '../../insights/application/InsightsService';
 
 export interface Transactor {
-  tx<T>(fn: () => T): T;
+  tx<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 /**
@@ -39,23 +39,23 @@ export class TestService {
     private clock: Clock,
   ) {}
 
-  submit(userId: string, input: SubmitTestInput, opts: { isSeed?: boolean } = {}) {
-    const loc = this.locations.requireActive(input.location_id);
+  async submit(userId: string, input: SubmitTestInput, opts: { isSeed?: boolean } = {}) {
+    const loc = await this.locations.requireActive(input.location_id);
     const now = this.clock.now();
-    const cfg = this.settings.health();
+    const cfg = await this.settings.health();
     const pSince = hoursAgo(now, cfg.penalty.windowHours);
 
-    const result = this.db.tx(() => {
+    const result = await this.db.tx(async () => {
       const health = computeHealth(
         { downloadMbps: input.download_mbps, uploadMbps: input.upload_mbps, pingMs: input.ping_ms, lossPct: input.packet_loss_pct },
         {
-          recentFailures: this.locationRepo.countFailures(loc.location_id, pSince),
-          recentOpenComplaints: this.locationRepo.countOpenComplaints(loc.location_id, pSince),
+          recentFailures: await this.locationRepo.countFailures(loc.location_id, pSince),
+          recentOpenComplaints: await this.locationRepo.countOpenComplaints(loc.location_id, pSince),
         },
         cfg,
       );
       const test_id = newId();
-      this.repo.insert({
+      await this.repo.insert({
         test_id,
         user_id: userId,
         location_id: loc.location_id,
@@ -67,15 +67,15 @@ export class TestService {
         base_score: health.baseScore,
         health_score: health.healthScore,
         health_status: health.status,
-        during_maintenance: this.maintenance.isUnderMaintenance(loc.location_id, now.toISOString()) ? 1 : 0,
-        is_seed: opts.isSeed ? 1 : 0,
+        during_maintenance: (await this.maintenance.isUnderMaintenance(loc.location_id, now.toISOString())) ? true : false,
+        is_seed: opts.isSeed ? true : false,
         client_meta: JSON.stringify(input.client_meta ?? {}),
         tested_at: now.toISOString(),
       });
-      const status = this.locations.refreshStatus(loc.location_id);
-      const outage = this.outages.evaluate(loc.location_id);
-      const test = this.repo.byId(test_id)!;
-      const insights = this.insights.onNewTest(test);
+      const status = await this.locations.refreshStatus(loc.location_id);
+      const outage = await this.outages.evaluate(loc.location_id);
+      const test = (await this.repo.byId(test_id))!;
+      const insights = await this.insights.onNewTest(test);
       return { test, status, outage, insights, health };
     });
 
@@ -91,26 +91,26 @@ export class TestService {
     };
   }
 
-  recordFailure(userId: string, input: { location_id: string; reason: FailureReason; detail?: string }) {
-    const loc = this.locations.requireActive(input.location_id);
+  async recordFailure(userId: string, input: { location_id: string; reason: FailureReason; detail?: string }) {
+    const loc = await this.locations.requireActive(input.location_id);
     const now = this.clock.now().toISOString();
     const failure_id = newId();
-    const out = this.db.tx(() => {
-      this.repo.insertFailure({ failure_id, user_id: userId, location_id: loc.location_id, reason: input.reason, detail: input.detail ?? '', occurred_at: now });
-      this.locations.refreshStatus(loc.location_id);
+    const out = await this.db.tx(async () => {
+      await this.repo.insertFailure({ failure_id, user_id: userId, location_id: loc.location_id, reason: input.reason, detail: input.detail ?? '', occurred_at: now });
+      await this.locations.refreshStatus(loc.location_id);
       return this.outages.evaluate(loc.location_id);
     });
     this.events.publish('dashboard.updated', { location_id: loc.location_id });
     return { failure_id, recorded: true, new_outage: out.opened ?? null };
   }
 
-  list(actor: { user_id: string; role: Role }, f: TestFilters) {
+  async list(actor: { user_id: string; role: Role }, f: TestFilters) {
     if (actor.role === 'user') f = { ...f, user_id: actor.user_id };
     return this.repo.list(f);
   }
 
-  get(actor: { user_id: string; role: Role }, id: string): SpeedTestDTO {
-    const t = this.repo.byId(id);
+  async get(actor: { user_id: string; role: Role }, id: string): Promise<SpeedTestDTO> {
+    const t = await this.repo.byId(id);
     if (!t) throw notFound('Speed test');
     if (actor.role === 'user' && t.user_id !== actor.user_id) throw forbidden();
     return t;

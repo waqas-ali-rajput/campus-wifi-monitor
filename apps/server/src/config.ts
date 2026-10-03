@@ -26,7 +26,12 @@ function loadDotEnv() {
 const schema = z.object({
   PORT: z.coerce.number().int().default(3000),
   HOST: z.string().default('0.0.0.0'),
-  DB_PATH: z.string().default('./data/campus-wifi.db'),
+  // Neon (or any Postgres) connection string. Use Neon's *pooled* string (host contains "-pooler").
+  DATABASE_URL: z.string().optional(),
+  // Max connections per process. Keep small on serverless; Neon's pooler fans in the rest.
+  PG_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  // Local folder for the generated JWT secret when JWT_SECRET is not set.
+  DATA_DIR: z.string().default('./data'),
   JWT_SECRET: z.string().optional(),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
   DISABLE_EVENT_STREAM: z.string().optional().transform((v) => v === 'true' || v === '1'),
@@ -50,7 +55,9 @@ const schema = z.object({
 export interface AppConfig {
   port: number;
   host: string;
-  dbPath: string;
+  databaseUrl?: string;
+  pgPoolMax: number;
+  dataDir: string;
   jwtSecret?: string;
   trustProxyHops: number;
   disableEventStream: boolean;
@@ -70,11 +77,12 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   if (env.JWT_SECRET && env.JWT_SECRET.length < 32) throw new Error('JWT_SECRET must contain at least 32 characters.');
   if (env.SERVERLESS_DEMO_MODE && env.NODE_ENV === 'production') throw new Error('SERVERLESS_DEMO_MODE cannot be used in production.');
   const tz = env.CAMPUS_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  const dbPath = env.SERVERLESS_DEMO_MODE ? '/tmp/campus-wifi-demo.db' : env.DB_PATH === ':memory:' ? ':memory:' : path.resolve(ROOT, env.DB_PATH);
   return {
     port: env.PORT,
     host: env.HOST,
-    dbPath,
+    databaseUrl: env.DATABASE_URL,
+    pgPoolMax: env.PG_POOL_MAX,
+    dataDir: path.resolve(ROOT, env.DATA_DIR),
     jwtSecret: env.JWT_SECRET,
     trustProxyHops: env.TRUST_PROXY_HOPS,
     disableEventStream: env.DISABLE_EVENT_STREAM || env.SERVERLESS_DEMO_MODE,

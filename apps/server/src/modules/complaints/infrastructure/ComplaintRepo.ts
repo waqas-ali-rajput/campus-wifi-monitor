@@ -1,5 +1,5 @@
 import type { ComplaintDTO, ComplaintEventDTO } from '@campus/shared';
-import type { Db } from '../../../infrastructure/db/connection';
+import type { CompatDb } from '../../../infrastructure/db/compat';
 
 export interface ComplaintFilters {
   location_id?: string;
@@ -22,10 +22,10 @@ const SELECT = `SELECT c.*, l.location_name, l.building, l.current_status AS loc
   JOIN users u ON u.user_id = c.user_id LEFT JOIN users s ON s.user_id = c.assigned_staff`;
 
 export class ComplaintRepo {
-  constructor(private db: Db) {}
+  constructor(private db: CompatDb) {}
 
-  insert(c: Omit<ComplaintDTO, 'user_name' | 'location_name' | 'building' | 'assigned_name' | 'location_status'> & { is_seed: number }) {
-    this.db
+  async insert(c: Omit<ComplaintDTO, 'user_name' | 'location_name' | 'building' | 'assigned_name' | 'location_status'> & { is_seed: boolean }) {
+    await this.db
       .prepare(
         `INSERT INTO complaints(complaint_id, user_id, location_id, complaint_type, description, related_test_id, status, assigned_staff,
            ai_category, ai_confidence, is_seed, created_at, updated_at, resolved_at)
@@ -35,17 +35,17 @@ export class ComplaintRepo {
       .run(c);
   }
 
-  byId(id: string): ComplaintDTO | undefined {
-    return this.db.prepare(`${SELECT} WHERE c.complaint_id = ?`).get(id) as ComplaintDTO | undefined;
+  async byId(id: string): Promise<ComplaintDTO | undefined> {
+    return (await this.db.prepare(`${SELECT} WHERE c.complaint_id = ?`).get(id)) as ComplaintDTO | undefined;
   }
 
-  update(id: string, patch: Record<string, unknown>) {
+  async update(id: string, patch: Record<string, unknown>) {
     const cols = Object.keys(patch);
-    this.db.prepare(`UPDATE complaints SET ${cols.map((c) => `${c} = @${c}`).join(', ')} WHERE complaint_id = @__id`).run({ ...patch, __id: id });
+    await this.db.prepare(`UPDATE complaints SET ${cols.map((c) => `${c} = @${c}`).join(', ')} WHERE complaint_id = @__id`).run({ ...patch, __id: id });
   }
 
-  addEvent(e: Omit<ComplaintEventDTO, 'actor_name'>) {
-    this.db
+  async addEvent(e: Omit<ComplaintEventDTO, 'actor_name'>) {
+    await this.db
       .prepare(
         `INSERT INTO complaint_events(event_id, complaint_id, actor_id, kind, from_status, to_status, note, created_at)
          VALUES (@event_id, @complaint_id, @actor_id, @kind, @from_status, @to_status, @note, @created_at)`,
@@ -53,16 +53,19 @@ export class ComplaintRepo {
       .run(e);
   }
 
-  events(complaintId: string): ComplaintEventDTO[] {
-    return this.db
+  async events(complaintId: string): Promise<ComplaintEventDTO[]> {
+    // `rowid` ordered same-created_at events in SQLite; `seq` is its stable equivalent.
+    return (await this.db
       .prepare(
-        `SELECT e.*, u.name AS actor_name, u.role AS actor_role FROM complaint_events e JOIN users u ON u.user_id = e.actor_id
-         WHERE e.complaint_id = ? ORDER BY e.created_at, e.rowid`,
+        `SELECT e.event_id, e.complaint_id, e.actor_id, e.kind, e.from_status, e.to_status, e.note, e.created_at,
+           u.name AS actor_name, u.role AS actor_role
+         FROM complaint_events e JOIN users u ON u.user_id = e.actor_id
+         WHERE e.complaint_id = ? ORDER BY e.created_at, e.seq`,
       )
-      .all(complaintId) as ComplaintEventDTO[];
+      .all(complaintId)) as ComplaintEventDTO[];
   }
 
-  list(f: ComplaintFilters) {
+  async list(f: ComplaintFilters) {
     const where: string[] = [];
     const p: Record<string, unknown> = {};
     if (f.location_id) (where.push('c.location_id = @location_id'), (p.location_id = f.location_id));
@@ -76,18 +79,19 @@ export class ComplaintRepo {
     if (f.user_id) (where.push('c.user_id = @user_id'), (p.user_id = f.user_id));
     if (f.from) (where.push('c.created_at >= @from'), (p.from = f.from));
     if (f.to) (where.push('c.created_at <= @to'), (p.to = f.to));
-    if (f.q) (where.push('(c.description LIKE @q OR l.location_name LIKE @q OR u.name LIKE @q)'), (p.q = `%${f.q}%`));
+    // SQLite LIKE is case-insensitive for ASCII; ILIKE preserves that in Postgres.
+    if (f.q) (where.push('(c.description ILIKE @q OR l.location_name ILIKE @q OR u.name ILIKE @q)'), (p.q = `%${f.q}%`));
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const total = (
-      this.db
+      (await this.db
         .prepare(
-          `SELECT COUNT(*) n FROM complaints c JOIN locations l ON l.location_id = c.location_id JOIN users u ON u.user_id = c.user_id ${w}`,
+          `SELECT COUNT(*)::int AS n FROM complaints c JOIN locations l ON l.location_id = c.location_id JOIN users u ON u.user_id = c.user_id ${w}`,
         )
-        .get(p) as any
+        .get(p)) as any
     ).n;
-    const items = this.db
-      .prepare(`${SELECT} ${w} ORDER BY c.created_at DESC LIMIT @limit OFFSET @offset`)
-      .all({ ...p, limit: f.pageSize, offset: (f.page - 1) * f.pageSize }) as ComplaintDTO[];
+    const items = (await this.db
+      .prepare(`${SELECT} ${w} ORDER BY c.created_at DESC, c.complaint_id DESC LIMIT @limit OFFSET @offset`)
+      .all({ ...p, limit: f.pageSize, offset: (f.page - 1) * f.pageSize })) as ComplaintDTO[];
     return { items, page: f.page, pageSize: f.pageSize, total };
   }
 }

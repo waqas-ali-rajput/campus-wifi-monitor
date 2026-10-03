@@ -1,5 +1,6 @@
 import type { AppConfig } from './config';
 import { openDatabase, type Db } from './infrastructure/db/connection';
+import { asCompat } from './infrastructure/db/compat';
 import { migrate } from './infrastructure/db/migrate';
 import { hashPassword, JwtService, resolveJwtSecret, verifyPassword } from './infrastructure/security/security';
 import { SseHub } from './infrastructure/sse/SseHub';
@@ -32,33 +33,40 @@ import { AnalyticsService } from './modules/analytics/application/AnalyticsServi
 import { InternetTestRepo } from './modules/internet-tests/infrastructure/InternetTestRepo';
 import { InternetTestService } from './modules/internet-tests/application/InternetTestService';
 
-/** Manual dependency injection (composition root). */
-export function createContainer(config: AppConfig, opts: { clock?: Clock; db?: Db; llm?: LlmProvider } = {}) {
-  const db = opts.db ?? openDatabase(config.dbPath);
-  migrate(db);
+/**
+ * Manual dependency injection (composition root).
+ * Opens the Postgres pool and brings the schema up to date before anything uses it.
+ */
+export async function createContainer(
+  config: AppConfig,
+  opts: { clock?: Clock; db?: Db; llm?: LlmProvider; ephemeralSecret?: boolean; skipMigrate?: boolean } = {},
+) {
+  const db = opts.db ?? openDatabase(config.databaseUrl, { max: config.pgPoolMax });
+  if (!opts.skipMigrate) await migrate(db);
+  const sql = asCompat(db);
   const clock = opts.clock ?? systemClock;
   const tz = config.tz;
   const sse = new SseHub();
-  const jwt = new JwtService(resolveJwtSecret(config.jwtSecret, config.dbPath));
+  const jwt = new JwtService(resolveJwtSecret(config.jwtSecret, opts.ephemeralSecret ? null : config.dataDir));
   const hasher = { hash: hashPassword, verify: verifyPassword };
-  const tx = { tx: <T>(fn: () => T): T => db.transaction(fn)() };
+  const tx = { tx: <T>(fn: () => Promise<T>): Promise<T> => db.transaction(fn) };
   const llm =
     opts.llm ??
     (config.llm.provider === 'ollama' && config.llm.model ? new OllamaProvider(config.llm.url, config.llm.model) : new NoopLlmProvider());
 
   const repos = {
-    settings: new SettingsRepo(db),
-    activity: new ActivityRepo(db),
-    users: new UserRepo(db),
-    notifications: new NotificationRepo(db),
-    locations: new LocationRepo(db),
-    maintenance: new MaintenanceRepo(db),
-    outages: new OutageRepo(db),
-    tests: new TestRepo(db),
-    insights: new InsightRepo(db),
-    complaints: new ComplaintRepo(db),
-    analytics: new AnalyticsRepo(db),
-    internetTests: new InternetTestRepo(db),
+    settings: new SettingsRepo(sql),
+    activity: new ActivityRepo(sql),
+    users: new UserRepo(sql),
+    notifications: new NotificationRepo(sql),
+    locations: new LocationRepo(sql),
+    maintenance: new MaintenanceRepo(sql),
+    outages: new OutageRepo(sql),
+    tests: new TestRepo(sql),
+    insights: new InsightRepo(sql),
+    complaints: new ComplaintRepo(sql),
+    analytics: new AnalyticsRepo(sql),
+    internetTests: new InternetTestRepo(sql),
   };
 
   const settings = new SettingsService(repos.settings, repos.activity, clock);
@@ -87,4 +95,11 @@ export function createContainer(config: AppConfig, opts: { clock?: Clock; db?: D
   };
 }
 
-export type Container = ReturnType<typeof createContainer>;
+export type Container = Awaited<ReturnType<typeof createContainer>>;
+
+/** Brings location statuses, outages and insights up to date (startup / cold start). */
+export async function warmUp(c: Container) {
+  await c.services.locations.refreshAll();
+  await c.services.outages.evaluateAll();
+  await c.services.insights.refreshAll();
+}

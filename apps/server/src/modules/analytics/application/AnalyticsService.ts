@@ -29,12 +29,12 @@ export class AnalyticsService {
     };
   }
 
-  summary(): DashboardSummary {
+  async summary(): Promise<DashboardSummary> {
     const now = this.clock.now();
     const since = startOfLocalDay(now, this.tz).toISOString();
-    const k = this.repo.kpis(since);
-    const c = this.repo.complaintCounts(since);
-    const locs = this.locationRepo.all();
+    const k = await this.repo.kpis(since);
+    const c = await this.repo.complaintCounts(since);
+    const locs = await this.locationRepo.all();
     return {
       testsToday: k.tests,
       avgDownload: r1(k.d),
@@ -45,26 +45,28 @@ export class AnalyticsService {
       openComplaints: c.open ?? 0,
       resolvedComplaints: c.resolved ?? 0,
       resolvedToday: c.resolved_today ?? 0,
-      currentOutages: this.outages.active().length,
+      currentOutages: (await this.outages.active()).length,
     };
   }
 
-  campusStatus() {
+  async campusStatus() {
     return {
-      locations: this.locations.list(),
-      outages: this.outages.active(),
-      recent: this.repo.recentEvents(10),
+      locations: await this.locations.list(),
+      outages: await this.outages.active(),
+      recent: await this.repo.recentEvents(10),
       generated_at: this.clock.now().toISOString(),
     };
   }
 
-  heatmap() {
-    return this.locations.list().map((l) => ({
+  async heatmap() {
+    return (await this.locations.list()).map((l) => ({
       location_id: l.location_id,
       name: l.location_name,
       building: l.building,
       map_x: l.map_x,
       map_y: l.map_y,
+      latitude: l.latitude,
+      longitude: l.longitude,
       status: l.current_status,
       score: l.current_score,
       stale: !!l.current_stale,
@@ -79,8 +81,8 @@ export class AnalyticsService {
     return this.repo.byLocation(r);
   }
 
-  byHour(r: Range) {
-    const rows = this.tests.rowsSince(r.from, { to: r.to, location_id: r.location_id, building: r.building });
+  async byHour(r: Range) {
+    const rows = await this.tests.rowsSince(r.from, { to: r.to, location_id: r.location_id, building: r.building });
     const buckets = Array.from({ length: 24 }, () => [] as typeof rows);
     for (const t of rows) buckets[localParts(t.tested_at, this.tz).hour]!.push(t);
     return buckets.map((b, hour) => ({
@@ -94,9 +96,9 @@ export class AnalyticsService {
     }));
   }
 
-  byDay(r: Range) {
-    const rows = this.tests.rowsSince(r.from, { to: r.to, location_id: r.location_id, building: r.building });
-    const complaints = this.repo.complaintRows(r);
+  async byDay(r: Range) {
+    const rows = await this.tests.rowsSince(r.from, { to: r.to, location_id: r.location_id, building: r.building });
+    const complaints = await this.repo.complaintRows(r);
     const map = new Map<string, typeof rows>();
     for (const t of rows) {
       const k = localParts(t.tested_at, this.tz).dayKey;
@@ -130,8 +132,8 @@ export class AnalyticsService {
     });
   }
 
-  complaintsByBuilding(r: Range) {
-    const rows = this.repo.complaintsByBuilding(r);
+  async complaintsByBuilding(r: Range) {
+    const rows = await this.repo.complaintsByBuilding(r);
     const out = new Map<string, Record<string, number | string>>();
     for (const x of rows) {
       const e = out.get(x.building) ?? { building: x.building, total: 0 };
@@ -143,16 +145,16 @@ export class AnalyticsService {
   }
 
   /** Peak usage periods: volume and score per hour of day. */
-  peakPeriods(r: Range) {
-    const hours = this.byHour(r);
+  async peakPeriods(r: Range) {
+    const hours = await this.byHour(r);
     const byVolume = [...hours].sort((a, b) => b.tests - a.tests).slice(0, 3);
     const worst = [...hours].filter((h) => h.tests >= 3).sort((a, b) => (a.avg_score ?? 100) - (b.avg_score ?? 100)).slice(0, 3);
     return { hours, busiest: byVolume, slowest: worst };
   }
 
-  trends(locationId: string | undefined, days = 14) {
+  async trends(locationId: string | undefined, days = 14) {
     const r = this.range({ days, location_id: locationId });
-    return { daily: this.byDay(r), hourly: this.byHour(r), location_id: locationId ?? null, days };
+    return { daily: await this.byDay(r), hourly: await this.byHour(r), location_id: locationId ?? null, days };
   }
 
   compareBuildings(r: Range) {
@@ -160,10 +162,10 @@ export class AnalyticsService {
   }
 
   /** Locations/categories repeating on ≥ 3 distinct days in 14 d. */
-  recurringProblems(r: Range) {
+  async recurringProblems(r: Range) {
     const now = this.clock.now();
     const range = { ...r, from: r.from ?? daysAgo(now, 14) };
-    const complaints = this.repo.complaintRows(range);
+    const complaints = await this.repo.complaintRows(range);
     const groups = new Map<string, { location_id: string; location_name: string; building: string; type: string; days: Set<string>; count: number; last: string }>();
     for (const c of complaints) {
       const key = `${c.location_id}|${c.complaint_type}`;
@@ -185,7 +187,7 @@ export class AnalyticsService {
         count: g.count,
         last_seen: g.last,
       }));
-    const rows = this.tests.rowsSince(range.from, { to: range.to, location_id: r.location_id, building: r.building });
+    const rows = await this.tests.rowsSince(range.from, { to: range.to, location_id: r.location_id, building: r.building });
     const perLocDay = new Map<string, Map<string, number[]>>();
     for (const t of rows) {
       const m = perLocDay.get(t.location_id) ?? new Map();
@@ -218,9 +220,9 @@ export class AnalyticsService {
   }
 
   /** Location detail (IT): 24 h series, hour-of-day profile. */
-  locationSeries(locationId: string) {
+  async locationSeries(locationId: string) {
     const now = this.clock.now();
-    const rows = this.tests.rowsSince(daysAgo(now, 1), { location_id: locationId });
+    const rows = await this.tests.rowsSince(daysAgo(now, 1), { location_id: locationId });
     const series = rows.map((t) => ({
       at: t.tested_at,
       score: t.health_score,
@@ -230,6 +232,6 @@ export class AnalyticsService {
       loss: t.packet_loss,
     }));
     const r = this.range({ days: 14, location_id: locationId });
-    return { series24h: series, byHour: this.byHour(r), median24h: r1(median(rows.map((x) => x.health_score))) };
+    return { series24h: series, byHour: await this.byHour(r), median24h: r1(median(rows.map((x) => x.health_score))) };
   }
 }

@@ -1,10 +1,11 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { loadConfig } from '../src/config';
 import { createContainer, type Container } from '../src/container';
 import { createApp } from '../src/http/app';
 import { FixedClock } from '../src/shared/time';
 import { seed } from '../scripts/seed';
+import { openTestDatabase, TEST_DATABASE_URL } from './pg';
 
 let c: Container;
 let app: ReturnType<typeof createApp>;
@@ -17,15 +18,28 @@ async function login(email: string) {
   expect(res.status).toBe(200);
   return agent;
 }
-const loc = (name: string) => c.repos.locations.byName(name)!.location_id;
+const locIds = new Map<string, string>();
+const loc = (name: string) => locIds.get(name)!;
+let dropDatabase: (() => Promise<void>) | undefined;
 
-beforeAll(() => {
-  c = createContainer(loadConfig({ dbPath: ':memory:', rateLimit: false, tz: 'Asia/Karachi' }), { clock });
-  seed(c, { quiet: true });
+if (!TEST_DATABASE_URL) console.warn('Skipping API integration tests: set TEST_DATABASE_URL to a Postgres database (see README).');
+
+beforeAll(async () => {
+  if (!TEST_DATABASE_URL) return;
+  const { db, drop } = await openTestDatabase();
+  dropDatabase = drop;
+  c = await createContainer(loadConfig({ rateLimit: false, tz: 'Asia/Karachi' }), { clock, db, ephemeralSecret: true });
+  await seed(c, { quiet: true });
+  for (const l of await c.repos.locations.all(true)) locIds.set(l.location_name, l.location_id);
   app = createApp(c, { quiet: true, webDist: '/nonexistent' });
+}, 120_000);
+
+afterAll(async () => {
+  c?.sse.close();
+  await dropDatabase?.();
 });
 
-describe('auth & RBAC', () => {
+describe.skipIf(!TEST_DATABASE_URL)('auth & RBAC', () => {
   it('login ok / bad / suspended', async () => {
     await login('student01@campus.local');
     const bad = await request(app).post('/api/auth/login').set(X).send({ email: 'student01@campus.local', password: 'nope' });
@@ -42,9 +56,9 @@ describe('auth & RBAC', () => {
   });
   it('excludes synthetic seed tests from a user’s personal history', async () => {
     const student = await login('student01@campus.local');
-    const id = c.repos.users.byEmail('student01@campus.local')!.user_id;
+    const id = (await c.repos.users.byEmail('student01@campus.local'))!.user_id;
     expect((await student.get('/api/tests?pageSize=200')).body.items).toHaveLength(0);
-    expect(c.repos.tests.list({ user_id: id, page: 1, pageSize: 200 }).total).toBe(0);
+    expect((await c.repos.tests.list({ user_id: id, page: 1, pageSize: 200 })).total).toBe(0);
   });
   it('protects the last admin and suspends accounts', async () => {
     const admin = await login('admin@campus.local');
@@ -58,7 +72,7 @@ describe('auth & RBAC', () => {
   });
 });
 
-describe('location coordinates', () => {
+describe.skipIf(!TEST_DATABASE_URL)('location coordinates', () => {
   it('allows OSM map tiles while retaining a usable Referer policy', async () => {
     const response = await request(app).get('/api/health');
     expect(response.headers['content-security-policy']).toContain('https://tile.openstreetmap.org');
@@ -69,15 +83,15 @@ describe('location coordinates', () => {
     const admin = await login('admin@campus.local');
     const locationId = loc('Computer Lab 1');
     await admin.patch(`/api/locations/${locationId}`).set(X).send({ latitude: 25.408123, longitude: 68.260345 }).expect(200);
-    expect(c.services.locations.get(locationId)).toMatchObject({ latitude: 25.408123, longitude: 68.260345 });
+    expect(await c.services.locations.get(locationId)).toMatchObject({ latitude: 25.408123, longitude: 68.260345 });
     await admin.patch(`/api/locations/${locationId}`).set(X).send({ latitude: null }).expect(400);
     await admin.patch(`/api/locations/${locationId}`).set(X).send({ latitude: 91, longitude: 68 }).expect(400);
     await admin.patch(`/api/locations/${locationId}`).set(X).send({ latitude: -90, longitude: 180 }).expect(200);
-    expect(c.services.locations.get(locationId)).toMatchObject({ latitude: -90, longitude: 180 });
+    expect(await c.services.locations.get(locationId)).toMatchObject({ latitude: -90, longitude: 180 });
   });
 });
 
-describe('speed test probes', () => {
+describe.skipIf(!TEST_DATABASE_URL)('speed test probes', () => {
   it('download returns exactly N uncompressed bytes; upload counts bytes; ping 204', async () => {
     const a = await login('student03@campus.local');
     const d = await a.get('/api/speedtest/download?bytes=1048576').buffer(true).parse((res, cb) => {
@@ -99,12 +113,12 @@ describe('speed test probes', () => {
   });
 });
 
-describe('off-campus internet tests', () => {
+describe.skipIf(!TEST_DATABASE_URL)('off-campus internet tests', () => {
   it('stores provider measurements as personal MUET-context data without affecting campus health', async () => {
     const a = await login('student08@campus.local');
     const locationId = loc('Computer Lab 1');
     const beforeTests = (await a.get('/api/tests?pageSize=1')).body.total;
-    const beforeHealth = c.repos.locations.byId(locationId)!.current_score;
+    const beforeHealth = (await c.repos.locations.byId(locationId))!.current_score;
     const result = await a.post('/api/internet-tests').set(X).send({
       provider: 'cloudflare', download_mbps: 85.75, upload_mbps: 17.5, ping_ms: 42.25, jitter_ms: 3.1,
     }).expect(201);
@@ -112,7 +126,7 @@ describe('off-campus internet tests', () => {
     expect(result.body).not.toHaveProperty('location_id');
     expect((await a.get('/api/internet-tests')).body.items[0].test_id).toBe(result.body.test_id);
     expect((await a.get('/api/tests?pageSize=1')).body.total).toBe(beforeTests);
-    expect(c.repos.locations.byId(locationId)!.current_score).toBe(beforeHealth);
+    expect((await c.repos.locations.byId(locationId))!.current_score).toBe(beforeHealth);
   });
 
   it('rejects invalid provider data and isolates internet-test history by account', async () => {
@@ -124,7 +138,7 @@ describe('off-campus internet tests', () => {
   });
 });
 
-describe('test ingestion pipeline', () => {
+describe.skipIf(!TEST_DATABASE_URL)('test ingestion pipeline', () => {
   it('scores the brief examples and rejects failed results', async () => {
     const a = await login('student04@campus.local');
     const good = await a.post('/api/tests').set(X).send({ location_id: loc('Computer Lab 2'), download_mbps: 36, upload_mbps: 14, ping_ms: 28, packet_loss_pct: 1 });
@@ -142,7 +156,7 @@ describe('test ingestion pipeline', () => {
   });
 });
 
-describe('complaints workflow', () => {
+describe.skipIf(!TEST_DATABASE_URL)('complaints workflow', () => {
   it('runs submitted → resolved with the right roles', async () => {
     const s = await login('student06@campus.local');
     const t = await s.post('/api/tests').set(X).send({ location_id: loc('Computer Lab 3'), download_mbps: 12, upload_mbps: 4, ping_ms: 80, packet_loss_pct: 2 });
@@ -157,7 +171,7 @@ describe('complaints workflow', () => {
     const it2 = await login('it2@campus.local');
     expect((await it2.post(`/api/complaints/${id}/transition`).set(X).send({ to: 'assigned' })).status).toBe(409);
     await it2.post(`/api/complaints/${id}/transition`).set(X).send({ to: 'reviewed' }).expect(200);
-    const it1user = c.repos.users.byEmail('it1@campus.local')!;
+    const it1user = (await c.repos.users.byEmail('it1@campus.local'))!;
     await it2.post(`/api/complaints/${id}/transition`).set(X).send({ to: 'assigned', assigned_staff: it1user.user_id }).expect(200);
     expect((await it2.post(`/api/complaints/${id}/transition`).set(X).send({ to: 'in_progress' })).status).toBe(403);
     const it1 = await login('it1@campus.local');
@@ -172,14 +186,14 @@ describe('complaints workflow', () => {
   });
 });
 
-describe('outages', () => {
+describe.skipIf(!TEST_DATABASE_URL)('outages', () => {
   it('3 users × same category in 30 min → exactly one outage; recovery after good tests', async () => {
     const id = loc('Administration Block');
     for (const n of ['08', '09', '10', '11']) {
       const a = await login(`student${n}@campus.local`);
       await a.post('/api/complaints').set(X).send({ location_id: id, complaint_type: 'no_internet', description: 'No internet at all here' }).expect(201);
     }
-    const active = c.repos.outages.list('active').filter((o) => o.location_id === id);
+    const active = (await c.repos.outages.list('active')).filter((o) => o.location_id === id);
     expect(active).toHaveLength(1);
     expect(active[0]!.message).toBe('Possible Wi-Fi outage detected in Administration.');
     for (const n of ['01', '02']) {
@@ -187,7 +201,7 @@ describe('outages', () => {
       const a = await login(`student${n}@campus.local`);
       await a.post('/api/tests').set(X).send({ location_id: id, download_mbps: 40, upload_mbps: 18, ping_ms: 22, packet_loss_pct: 0 }).expect(201);
     }
-    expect(c.repos.outages.activeFor(id)).toBeUndefined();
+    expect(await c.repos.outages.activeFor(id)).toBeUndefined();
   });
   it('maintenance suppresses new outages', async () => {
     const it1 = await login('it1@campus.local');
@@ -198,11 +212,11 @@ describe('outages', () => {
       const a = await login(`student${n}@campus.local`);
       await a.post('/api/complaints').set(X).send({ location_id: id, complaint_type: 'no_internet', description: 'No internet at all here' }).expect(201);
     }
-    expect(c.repos.outages.activeFor(id)).toBeUndefined();
+    expect(await c.repos.outages.activeFor(id)).toBeUndefined();
   });
 });
 
-describe('dashboard, analytics, insights, reports', () => {
+describe.skipIf(!TEST_DATABASE_URL)('dashboard, analytics, insights, reports', () => {
   it('serves KPIs and analytics', async () => {
     const m = await login('manager@campus.local');
     const s = (await m.get('/api/dashboard/summary')).body;

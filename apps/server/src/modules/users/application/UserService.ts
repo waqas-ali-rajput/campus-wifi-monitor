@@ -18,11 +18,11 @@ export class UserService {
     private clock: Clock,
   ) {}
 
-  create(input: { name: string; email: string; password: string; role: Role }, actorId: string | null): UserDTO {
-    if (this.users.byEmail(input.email)) throw new AppError('CONFLICT', 'An account with this email already exists.', { email: ['Email already registered'] });
+  async create(input: { name: string; email: string; password: string; role: Role }, actorId: string | null): Promise<UserDTO> {
+    if (await this.users.byEmail(input.email)) throw new AppError('CONFLICT', 'An account with this email already exists.', { email: ['Email already registered'] });
     const now = this.clock.now().toISOString();
     const user_id = newId();
-    this.users.insert({
+    await this.users.insert({
       user_id,
       name: input.name,
       email: input.email.toLowerCase(),
@@ -30,23 +30,23 @@ export class UserService {
       role: input.role,
       created_at: now,
     });
-    this.activity.log(actorId ?? user_id, actorId ? 'user.create' : 'user.register', 'user', user_id, { role: input.role, email: input.email }, now);
-    return this.users.publicById(user_id)!;
+    await this.activity.log(actorId ?? user_id, actorId ? 'user.create' : 'user.register', 'user', user_id, { role: input.role, email: input.email }, now);
+    return (await this.users.publicById(user_id))!;
   }
 
-  update(
+  async update(
     id: string,
     patch: { name?: string; role?: Role; account_status?: 'active' | 'suspended'; new_password?: string },
     actorId: string,
-  ): UserDTO {
-    const u = this.users.byId(id);
+  ): Promise<UserDTO> {
+    const u = await this.users.byId(id);
     if (!u) throw notFound('User');
     if (patch.role && patch.role !== u.role && id === actorId) throw forbidden('You cannot change your own role.');
     const losesAdmin =
       u.role === 'admin' &&
       u.account_status === 'active' &&
       ((patch.role && patch.role !== 'admin') || patch.account_status === 'suspended');
-    if (losesAdmin && this.users.countActiveAdmins() <= 1)
+    if (losesAdmin && (await this.users.countActiveAdmins()) <= 1)
       throw new AppError('CONFLICT', 'The last active administrator cannot be demoted or suspended.');
     if (patch.account_status === 'suspended' && id === actorId) throw forbidden('You cannot suspend your own account.');
     const dbPatch: Record<string, string> = {};
@@ -54,10 +54,10 @@ export class UserService {
     if (patch.role) dbPatch.role = patch.role;
     if (patch.account_status) dbPatch.account_status = patch.account_status;
     if (patch.new_password) dbPatch.password_hash = this.hasher.hash(patch.new_password);
-    this.users.update(id, dbPatch as any);
+    await this.users.update(id, dbPatch as any);
     const meta: Record<string, unknown> = { ...patch };
     if (meta.new_password) meta.new_password = '[reset]';
-    this.activity.log(actorId, 'user.update', 'user', id, meta, this.clock.now().toISOString());
-    return this.users.publicById(id)!;
+    await this.activity.log(actorId, 'user.update', 'user', id, meta, this.clock.now().toISOString());
+    return (await this.users.publicById(id))!;
   }
 }

@@ -12,7 +12,7 @@ It is a TypeScript monorepo with three parts that share one language and one set
 | Part | Folder | Technology |
 |---|---|---|
 | Shared rules and types | `packages/shared` | TypeScript, Zod |
-| Backend API | `apps/server` | Node.js, Express, SQLite (better-sqlite3), Server-Sent Events |
+| Backend API | `apps/server` | Node.js, Express, PostgreSQL on Neon (node-postgres), Server-Sent Events |
 | Frontend | `apps/web` | React 18, Vite, Tailwind CSS, TanStack Query, Recharts |
 
 `npm run setup && npm start` gives a working system on `http://localhost:3000` with demo data. No cloud services are used.
@@ -25,7 +25,7 @@ campus-wifi-monitor/
 ├─ .eslintrc.cjs             lint rules incl. the clean-architecture boundary rule
 ├─ .env.example              configuration (port, timezone, quick mode, optional local LLM)
 ├─ docs/                     this document + the architecture blueprint
-├─ data/                     SQLite database file (created at runtime)
+├─ data/                     Local runtime files (generated JWT secret)
 ├─ packages/shared/src/
 │  ├─ constants.ts           roles, statuses, complaint categories, status colours, role→permission table
 │  ├─ schemas/index.ts       Zod validation schemas used by BOTH server and web forms
@@ -129,7 +129,7 @@ Express server  ── http/middleware: auth → permission check → validation
   │        uses pure rules from packages/shared/domain
   ├─ modules/*/infrastructure SQL repositories (prepared statements)
   │        ▼
-  │     SQLite database file  data/campus-wifi.db
+  │     PostgreSQL (Neon)     DATABASE_URL, pooled connections
   ├─ SSE hub  → pushes dashboard.updated / notification / outage.opened… to connected browsers
   └─ Scheduler (every 60 s / 5 min) → refresh statuses, evaluate outages, insights, maintenance notices
 ```

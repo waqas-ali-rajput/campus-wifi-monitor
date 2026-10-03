@@ -22,19 +22,19 @@ export class Notifier {
     private clock: Clock,
   ) {}
 
-  usersWithRoles(...roles: Role[]): string[] {
+  async usersWithRoles(...roles: Role[]): Promise<string[]> {
     return this.users.idsByRoles(roles);
   }
-  allActiveUsers(): string[] {
+  async allActiveUsers(): Promise<string[]> {
     return this.users.allActiveIds();
   }
 
-  notify(n: NotifyInput): number {
+  async notify(n: NotifyInput): Promise<number> {
     const now = this.clock.now();
     const since = new Date(now.getTime() - 10 * 60000).toISOString();
     let sent = 0;
     for (const userId of new Set(n.recipients)) {
-      if (this.repo.existsSince(n.type, n.entityId ?? null, userId, since)) continue;
+      if (await this.repo.existsSince(n.type, n.entityId ?? null, userId, since)) continue;
       const row = {
         notification_id: newId(),
         user_id: userId,
@@ -46,7 +46,7 @@ export class Notifier {
         is_read: 0,
         created_at: now.toISOString(),
       };
-      this.repo.insert(row);
+      await this.repo.insert(row);
       this.events.publish('notification', row, { userIds: [userId] });
       sent++;
     }

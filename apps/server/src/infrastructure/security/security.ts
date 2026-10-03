@@ -27,11 +27,11 @@ export class JwtService {
   }
 }
 
-/** JWT secret: env → data/.jwt-secret → generate & store. */
-export function resolveJwtSecret(envSecret: string | undefined, dbPath: string): string {
+/** JWT secret: env → <dataDir>/.jwt-secret → generate & store. `null` dataDir = ephemeral (tests). */
+export function resolveJwtSecret(envSecret: string | undefined, dataDir: string | null): string {
   if (envSecret) return envSecret;
-  if (dbPath === ':memory:') return 'test-secret-' + randomBytes(8).toString('hex');
-  const file = path.join(path.dirname(dbPath), '.jwt-secret');
+  if (dataDir === null) return 'test-secret-' + randomBytes(8).toString('hex');
+  const file = path.join(dataDir, '.jwt-secret');
   if (existsSync(file)) return readFileSync(file, 'utf8').trim();
   mkdirSync(path.dirname(file), { recursive: true });
   const s = randomBytes(48).toString('hex');

@@ -1,5 +1,5 @@
 import type { SpeedTestDTO } from '@campus/shared';
-import type { Db } from '../../../infrastructure/db/connection';
+import type { CompatDb } from '../../../infrastructure/db/compat';
 
 export interface TestFilters {
   location_id?: string;
@@ -18,9 +18,9 @@ const SELECT = `SELECT t.test_id, t.user_id, t.location_id, t.download_speed, t.
   FROM speed_tests t JOIN locations l ON l.location_id = t.location_id JOIN users u ON u.user_id = t.user_id`;
 
 export class TestRepo {
-  constructor(private db: Db) {}
+  constructor(private db: CompatDb) {}
 
-  insert(t: {
+  async insert(t: {
     test_id: string;
     user_id: string;
     location_id: string;
@@ -32,12 +32,12 @@ export class TestRepo {
     base_score: number;
     health_score: number;
     health_status: string;
-    during_maintenance: number;
-    is_seed: number;
+    during_maintenance: boolean;
+    is_seed: boolean;
     client_meta: string;
     tested_at: string;
   }) {
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO speed_tests(test_id, user_id, location_id, download_speed, upload_speed, ping, jitter, packet_loss, base_score,
           health_score, health_status, during_maintenance, is_seed, client_meta, tested_at)
@@ -47,8 +47,8 @@ export class TestRepo {
       .run(t);
   }
 
-  insertFailure(f: { failure_id: string; user_id: string; location_id: string; reason: string; detail: string; occurred_at: string }) {
-    this.db
+  async insertFailure(f: { failure_id: string; user_id: string; location_id: string; reason: string; detail: string; occurred_at: string }) {
+    await this.db
       .prepare(
         `INSERT INTO test_failures(failure_id, user_id, location_id, reason, detail, occurred_at)
          VALUES (@failure_id, @user_id, @location_id, @reason, @detail, @occurred_at)`,
@@ -56,21 +56,21 @@ export class TestRepo {
       .run(f);
   }
 
-  byId(id: string): SpeedTestDTO | undefined {
-    return this.db.prepare(`${SELECT} WHERE t.test_id = ?`).get(id) as SpeedTestDTO | undefined;
+  async byId(id: string): Promise<SpeedTestDTO | undefined> {
+    return (await this.db.prepare(`${SELECT} WHERE t.test_id = ?`).get(id)) as SpeedTestDTO | undefined;
   }
 
-  lastByUser(userId: string): SpeedTestDTO | undefined {
-    return this.db.prepare(`${SELECT} WHERE t.user_id = ? ORDER BY t.tested_at DESC LIMIT 1`).get(userId) as SpeedTestDTO | undefined;
+  async lastByUser(userId: string): Promise<SpeedTestDTO | undefined> {
+    return (await this.db.prepare(`${SELECT} WHERE t.user_id = ? ORDER BY t.tested_at DESC LIMIT 1`).get(userId)) as SpeedTestDTO | undefined;
   }
 
-  latestForUserAtLocation(userId: string, locationId: string, since: string): SpeedTestDTO | undefined {
-    return this.db
+  async latestForUserAtLocation(userId: string, locationId: string, since: string): Promise<SpeedTestDTO | undefined> {
+    return (await this.db
       .prepare(`${SELECT} WHERE t.user_id = ? AND t.location_id = ? AND t.tested_at >= ? ORDER BY t.tested_at DESC LIMIT 1`)
-      .get(userId, locationId, since) as SpeedTestDTO | undefined;
+      .get(userId, locationId, since)) as SpeedTestDTO | undefined;
   }
 
-  list(f: TestFilters) {
+  async list(f: TestFilters) {
     const where: string[] = [];
     const p: Record<string, unknown> = {};
     if (f.location_id) (where.push('t.location_id = @location_id'), (p.location_id = f.location_id));
@@ -79,32 +79,36 @@ export class TestRepo {
     if (f.to) (where.push('t.tested_at <= @to'), (p.to = f.to));
     if (f.status) (where.push('t.health_status = @status'), (p.status = f.status));
     if (f.user_id) {
-      where.push('t.user_id = @user_id', 't.is_seed = 0', "json_extract(t.client_meta, '$.simulated') IS NOT 1");
+      // json_extract → jsonb operator. `IS NOT 1` in SQLite was true for NULL (i.e. no
+      // `simulated` key); the faithful equivalent is "not the string '1'".
+      where.push('t.user_id = @user_id', 't.is_seed = FALSE', `(t.client_meta::jsonb ->> 'simulated') IS DISTINCT FROM '1'`);
       p.user_id = f.user_id;
     }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const total = (this.db.prepare(`SELECT COUNT(*) n FROM speed_tests t JOIN locations l ON l.location_id = t.location_id ${w}`).get(p) as any).n;
-    const items = this.db
-      .prepare(`${SELECT} ${w} ORDER BY t.tested_at DESC LIMIT @limit OFFSET @offset`)
-      .all({ ...p, limit: f.pageSize, offset: (f.page - 1) * f.pageSize }) as SpeedTestDTO[];
+    const total = ((await this.db
+      .prepare(`SELECT COUNT(*)::int AS n FROM speed_tests t JOIN locations l ON l.location_id = t.location_id ${w}`)
+      .get(p)) as any).n;
+    const items = (await this.db
+      .prepare(`${SELECT} ${w} ORDER BY t.tested_at DESC, t.test_id DESC LIMIT @limit OFFSET @offset`)
+      .all({ ...p, limit: f.pageSize, offset: (f.page - 1) * f.pageSize })) as SpeedTestDTO[];
     return { items, page: f.page, pageSize: f.pageSize, total };
   }
 
   /** Raw rows for analytics/insights (bounded by time). */
-  rowsSince(since: string, f: { location_id?: string; building?: string; to?: string } = {}) {
+  async rowsSince(since: string, f: { location_id?: string; building?: string; to?: string } = {}) {
     const where = ['t.tested_at >= @since'];
     const p: Record<string, unknown> = { since };
     if (f.location_id) (where.push('t.location_id = @location_id'), (p.location_id = f.location_id));
     if (f.building) (where.push('l.building = @building'), (p.building = f.building));
     if (f.to) (where.push('t.tested_at <= @to'), (p.to = f.to));
-    return this.db
+    return (await this.db
       .prepare(
         `SELECT t.location_id, l.location_name, l.building, t.download_speed, t.upload_speed, t.ping, t.packet_loss, t.health_score,
            t.base_score, t.health_status, t.tested_at
          FROM speed_tests t JOIN locations l ON l.location_id = t.location_id
          WHERE ${where.join(' AND ')} ORDER BY t.tested_at`,
       )
-      .all(p) as Array<{
+      .all(p)) as Array<{
       location_id: string;
       location_name: string;
       building: string;
@@ -119,9 +123,9 @@ export class TestRepo {
     }>;
   }
 
-  failuresSince(since: string, locationId?: string) {
-    return this.db
+  async failuresSince(since: string, locationId?: string) {
+    return (await this.db
       .prepare(`SELECT * FROM test_failures WHERE occurred_at >= ? ${locationId ? 'AND location_id = ?' : ''} ORDER BY occurred_at DESC`)
-      .all(...[since, ...(locationId ? [locationId] : [])]) as any[];
+      .all(...[since, ...(locationId ? [locationId] : [])])) as any[];
   }
 }

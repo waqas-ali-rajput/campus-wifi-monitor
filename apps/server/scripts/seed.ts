@@ -12,6 +12,7 @@
 import { classifyComplaint, computeHealth, type ComplaintStatus, type ComplaintType } from '@campus/shared';
 import { loadConfig } from '../src/config';
 import { createContainer, type Container } from '../src/container';
+import { bulkInsert } from '../src/infrastructure/db/bulk';
 import { hashPassword } from '../src/infrastructure/security/security';
 import { localParts } from '../src/shared/time';
 import { COMPLAINT_TEXT, PROFILES, STUDENT_NAMES, rng, sampleMetrics } from './profiles';
@@ -20,9 +21,11 @@ const PASSWORD = 'Passw0rd!demo';
 const r = rng();
 const uuid = () => crypto.randomUUID();
 
-export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; accounts?: boolean } = {}) {
+type Row = Record<string, unknown>;
+
+export async function seed(c: Container, opts: { force?: boolean; quiet?: boolean; accounts?: boolean } = {}) {
   const db = c.db;
-  const userCount = (db.prepare('SELECT COUNT(*) n FROM users').get() as any).n;
+  const userCount = (await db.query<{ n: number }>('SELECT COUNT(*)::int AS n FROM users')).rows[0]!.n;
   if (opts.accounts) {
     if (userCount === 0) {
       if (!opts.quiet) console.error('Seed stopped: no users exist. Run "npm run bootstrap-admin" (or "npm run seed") first.');
@@ -37,18 +40,22 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; acc
   const tz = c.tz;
   const hourOf = (d: Date) => localParts(d, tz).hour;
 
-  db.transaction(() => {
+  const healthCfg = await c.services.settings.health();
+  await db.transaction(async () => {
     if (opts.force) {
-      for (const t of ['complaint_events', 'notifications', 'insights', 'activity_logs', 'complaints', 'test_failures', 'speed_tests', 'outages', 'maintenance_windows', 'locations', 'users'])
-        db.prepare(`DELETE FROM ${t}`).run();
+      for (const t of ['complaint_events', 'notifications', 'insights', 'activity_logs', 'complaints', 'test_failures', 'speed_tests', 'outages', 'maintenance_windows', 'internet_tests', 'locations', 'users'])
+        await db.query(`DELETE FROM ${t}`);
     }
+    const existingUsers = new Set((await db.query<{ user_id: string }>('SELECT user_id FROM users')).rows.map((x) => x.user_id));
+    const existingLocations = new Set((await db.query<{ location_id: string }>('SELECT location_id FROM locations')).rows.map((x) => x.location_id));
+    const out = { users: [] as Row[], locations: [] as Row[], tests: [] as Row[], complaints: [] as Row[], events: [] as Row[], activity: [] as Row[], notifications: [] as Row[], failures: [] as Row[] };
 
     // ---- users (§12.1) ----
     // With --accounts the demo accounts already exist (bootstrap-admin), so reuse them.
     const hash = hashPassword(PASSWORD);
     const addUser = (id: string, name: string, email: string, role: string) => {
-      if (opts.accounts && c.repos.users.byId(id)) return;
-      db.prepare('INSERT INTO users(user_id, name, email, password_hash, role, created_at) VALUES (?,?,?,?,?,?)').run(id, name, email, hash, role, new Date(now.getTime() - 30 * 864e5).toISOString());
+      if (opts.accounts && existingUsers.has(id)) return;
+      out.users.push({ user_id: id, name, email, password_hash: hash, role, created_at: new Date(now.getTime() - 30 * 864e5).toISOString() });
     };
     addUser('u-admin', 'Imran Qureshi', 'admin@campus.local', 'admin');
     addUser('u-manager', 'Nadia Hussain', 'manager@campus.local', 'manager');
@@ -65,8 +72,8 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; acc
     for (const p of PROFILES) {
       const id = 'loc-' + p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       locId.set(p.name, id);
-      if (opts.accounts && c.repos.locations.byId(id)) continue;
-      c.repos.locations.insert({
+      if (opts.accounts && existingLocations.has(id)) continue;
+      out.locations.push({
         location_id: id, location_name: p.name, building: p.building, floor: p.floor, description: p.description,
         map_x: p.map[0], map_y: p.map[1], latitude: null, longitude: null, created_at: new Date(now.getTime() - 30 * 864e5).toISOString(),
       });
@@ -76,12 +83,12 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; acc
     const tests: Array<{ id: string; user: string; loc: string; at: string; status: string }> = [];
     const insertTest = (p: (typeof PROFILES)[number], at: Date, user: string, extra?: Parameters<typeof sampleMetrics>[3]) => {
       const m = sampleMetrics(p, hourOf(at), r, extra);
-      const h = computeHealth({ downloadMbps: m.download_mbps, uploadMbps: m.upload_mbps, pingMs: m.ping_ms, lossPct: m.packet_loss_pct }, {}, c.services.settings.health());
+      const h = computeHealth({ downloadMbps: m.download_mbps, uploadMbps: m.upload_mbps, pingMs: m.ping_ms, lossPct: m.packet_loss_pct }, {}, healthCfg);
       const id = uuid();
-      c.repos.tests.insert({
+      out.tests.push({
         test_id: id, user_id: user, location_id: locId.get(p.name)!, download_speed: m.download_mbps, upload_speed: m.upload_mbps,
         ping: m.ping_ms, jitter: m.jitter_ms, packet_loss: m.packet_loss_pct, base_score: h.baseScore, health_score: h.healthScore,
-        health_status: h.status, during_maintenance: 0, is_seed: 1, client_meta: '{"seed":true}', tested_at: at.toISOString(),
+        health_status: h.status, during_maintenance: false, is_seed: true, client_meta: '{"seed":true}', tested_at: at.toISOString(),
       });
       tests.push({ id, user, loc: p.name, at: at.toISOString(), status: h.status });
     };
@@ -112,10 +119,10 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; acc
           const m = sampleMetrics({ ...p, factor: () => ({ down: 0.85, up: 0.85, ping: 1.15, loss: 1.2 }) }, 13, r);
           const h = computeHealth({ downloadMbps: m.download_mbps, uploadMbps: m.upload_mbps, pingMs: m.ping_ms, lossPct: m.packet_loss_pct });
           const id = uuid();
-          c.repos.tests.insert({
+          out.tests.push({
             test_id: id, user_id: r.pick(students), location_id: locId.get(p.name)!, download_speed: m.download_mbps, upload_speed: m.upload_mbps,
             ping: m.ping_ms, jitter: m.jitter_ms, packet_loss: m.packet_loss_pct, base_score: h.baseScore, health_score: h.healthScore,
-            health_status: h.status, during_maintenance: 0, is_seed: 1, client_meta: '{"seed":true}', tested_at: at.toISOString(),
+            health_status: h.status, during_maintenance: false, is_seed: true, client_meta: '{"seed":true}', tested_at: at.toISOString(),
           });
           tests.push({ id, user: students[0]!, loc: p.name, at: at.toISOString(), status: h.status });
         } else insertTest(p, at, r.pick(students));
@@ -168,24 +175,24 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; acc
         events.push({ to, at: new Date(t).toISOString(), actor, note });
       }
       const last = events.at(-1);
-      c.repos.complaints.insert({
+      out.complaints.push({
         complaint_id: id, user_id: user, location_id: locId.get(locName)!, complaint_type: type, description,
         related_test_id: myTest?.id ?? null, status: finalStatus, assigned_staff: ORDER.indexOf(finalStatus) >= 2 ? assignee : null,
-        ai_category: ai.category, ai_confidence: ai.confidence, is_seed: 1, created_at: created, updated_at: last?.at ?? created,
+        ai_category: ai.category, ai_confidence: ai.confidence, is_seed: true, created_at: created, updated_at: last?.at ?? created,
         resolved_at: finalStatus === 'resolved' ? last!.at : null,
       });
-      c.repos.complaints.addEvent({ event_id: uuid(), complaint_id: id, actor_id: user, kind: 'created', from_status: null, to_status: 'submitted', note: '', created_at: created });
+      out.events.push({ event_id: uuid(), complaint_id: id, actor_id: user, kind: 'created', from_status: null, to_status: 'submitted', note: '', created_at: created });
       let prev: ComplaintStatus = 'submitted';
       for (const e of events) {
-        c.repos.complaints.addEvent({ event_id: uuid(), complaint_id: id, actor_id: e.actor, kind: e.to === 'assigned' ? 'assignment' : 'status_change', from_status: prev, to_status: e.to, note: e.note, created_at: e.at });
-        c.repos.activity.log(e.actor, `complaint.${e.to}`, 'complaint', id, { from: prev, to: e.to, seed: true }, e.at);
+        out.events.push({ event_id: uuid(), complaint_id: id, actor_id: e.actor, kind: e.to === 'assigned' ? 'assignment' : 'status_change', from_status: prev, to_status: e.to, note: e.note, created_at: e.at });
+        out.activity.push({ log_id: uuid(), actor_id: e.actor, action: `complaint.${e.to}`, entity_type: 'complaint', entity_id: id, meta_json: JSON.stringify({ from: prev, to: e.to, seed: true }), created_at: e.at });
         prev = e.to;
       }
       if (finalStatus === 'resolved' && Date.parse(last!.at) > now.getTime() - 3 * 864e5)
-        c.repos.notifications.insert({ notification_id: uuid(), user_id: user, type: 'complaint_resolved', title: `Your complaint at ${locName} was resolved`, body: last!.note, entity_type: 'complaint', entity_id: id, is_read: 0, created_at: last!.at });
+        out.notifications.push({ notification_id: uuid(), user_id: user, type: 'complaint_resolved', title: `Your complaint at ${locName} was resolved`, body: last!.note, entity_type: 'complaint', entity_id: id, is_read: false, created_at: last!.at });
       if (finalStatus !== 'resolved' && Date.parse(created) > now.getTime() - 2 * 864e5)
         for (const s of ['u-it1', 'u-it2', 'u-manager'])
-          c.repos.notifications.insert({ notification_id: uuid(), user_id: s, type: 'complaint_submitted', title: `New complaint: ${type.replace(/_/g, ' ')} at ${locName}`, body: description.slice(0, 140), entity_type: 'complaint', entity_id: id, is_read: 0, created_at: created });
+          out.notifications.push({ notification_id: uuid(), user_id: s, type: 'complaint_submitted', title: `New complaint: ${type.replace(/_/g, ' ')} at ${locName}`, body: description.slice(0, 140), entity_type: 'complaint', entity_id: id, is_read: false, created_at: created });
       return id;
     };
     const atBadHour = (locName: string, daysBack: number) => {
@@ -210,40 +217,53 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; acc
       addComplaint(loc, i === 0 ? 'frequent_disconnection' : r.pick(types), at, st, r.pick(students), i === 0 ? 'Wi-Fi disconnects every few minutes in Lab 3.' : undefined);
     });
     // the brief's own example complaint belongs to Lab 3
-    db.prepare(`UPDATE complaints SET location_id = ? WHERE description = 'Wi-Fi disconnects every few minutes in Lab 3.'`).run(locId.get('Computer Lab 3'));
+    for (const row of out.complaints) if (row.description === 'Wi-Fi disconnects every few minutes in Lab 3.') row.location_id = locId.get('Computer Lab 3');
 
     // ---- a few failures ----
     for (let i = 0; i < 10; i++) {
       const p = r.pick(PROFILES.filter((x) => ['Hostel Block', 'Library Floor 2', 'Cafeteria'].includes(x.name)));
-      c.repos.tests.insertFailure({ failure_id: uuid(), user_id: r.pick(students), location_id: locId.get(p.name)!, reason: r.pick(['unreachable', 'timeout', 'download_failed'] as const), detail: 'seed', occurred_at: new Date(now.getTime() - (1.2 + r.next() * 12) * 864e5).toISOString() });
+      out.failures.push({ failure_id: uuid(), user_id: r.pick(students), location_id: locId.get(p.name)!, reason: r.pick(['unreachable', 'timeout', 'download_failed'] as const), detail: 'seed', occurred_at: new Date(now.getTime() - (1.2 + r.next() * 12) * 864e5).toISOString() });
     }
+
+    // ---- write everything in foreign-key order ----
+    await bulkInsert(db, 'users', out.users);
+    await bulkInsert(db, 'locations', out.locations);
+    await bulkInsert(db, 'speed_tests', out.tests);
+    await bulkInsert(db, 'complaints', out.complaints);
+    // created_at ties keep insertion order through complaint_events.seq
+    await bulkInsert(db, 'complaint_events', out.events);
+    await bulkInsert(db, 'activity_logs', out.activity);
+    await bulkInsert(db, 'notifications', out.notifications);
+    await bulkInsert(db, 'test_failures', out.failures);
 
     // ---- one resolved past outage ----
     const oAt = atBadHour('Library Floor 2', 5);
     const oid = uuid();
-    c.repos.outages.insert({ outage_id: oid, location_id: locId.get('Library Floor 2')!, cause_rule: 'R1', message: 'Possible Wi-Fi outage detected in Library Block.', complaint_count: 4, failure_count: 0, explanation: '4 users reported No Internet in Library Block in 30 minutes', category: 'no_internet', detected_at: oAt.toISOString() });
-    c.repos.outages.resolve(oid, new Date(oAt.getTime() + 95 * 60000).toISOString(), 'u-it1');
-    c.repos.activity.log(null, 'outage.detected', 'outage', oid, { rule: 'R1', seed: true }, oAt.toISOString());
-    c.repos.activity.log('u-it1', 'outage.resolve', 'outage', oid, { seed: true }, new Date(oAt.getTime() + 95 * 60000).toISOString());
+    await c.repos.outages.insert({ outage_id: oid, location_id: locId.get('Library Floor 2')!, cause_rule: 'R1', message: 'Possible Wi-Fi outage detected in Library Block.', complaint_count: 4, failure_count: 0, explanation: '4 users reported No Internet in Library Block in 30 minutes', category: 'no_internet', detected_at: oAt.toISOString() });
+    await c.repos.outages.resolve(oid, new Date(oAt.getTime() + 95 * 60000).toISOString(), 'u-it1');
+    await c.repos.activity.log(null, 'outage.detected', 'outage', oid, { rule: 'R1', seed: true }, oAt.toISOString());
+    await c.repos.activity.log('u-it1', 'outage.resolve', 'outage', oid, { seed: true }, new Date(oAt.getTime() + 95 * 60000).toISOString());
 
     // ---- one future maintenance window (tomorrow 02:00–04:00 local) ----
     const tomorrow = new Date(now.getTime() + 864e5);
     const lp = localParts(tomorrow, tz);
     const start = new Date(tomorrow.getTime() + (2 - lp.hour) * 3600000 - lp.minute * 60000);
-    c.repos.maintenance.insert({ maintenance_id: uuid(), location_id: locId.get('Hostel Block')!, title: 'Access point firmware upgrade', notes: 'All hostel APs will restart. Expect short disconnections.', starts_at: start.toISOString(), ends_at: new Date(start.getTime() + 2 * 3600000).toISOString(), created_by: 'u-it2', announced: 0, created_at: nowIso });
-  })();
+    await c.repos.maintenance.insert({ maintenance_id: uuid(), location_id: locId.get('Hostel Block')!, title: 'Access point firmware upgrade', notes: 'All hostel APs will restart. Expect short disconnections.', starts_at: start.toISOString(), ends_at: new Date(start.getTime() + 2 * 3600000).toISOString(), created_by: 'u-it2', announced: false, created_at: nowIso });
+  });
 
   // Same services the running app uses → statuses, outages and insights are populated.
-  c.services.locations.refreshAll();
-  c.services.maintenance.announcePending();
-  for (const l of c.repos.locations.all()) {
-    const latest = c.repos.tests.list({ location_id: l.location_id, page: 1, pageSize: 1 }).items[0];
-    if (latest) c.services.insights.onNewTest(latest);
+  await c.services.locations.refreshAll();
+  await c.services.maintenance.announcePending();
+  for (const l of await c.repos.locations.all()) {
+    const latest = (await c.repos.tests.list({ location_id: l.location_id, page: 1, pageSize: 1 })).items[0];
+    if (latest) await c.services.insights.onNewTest(latest);
   }
-  c.services.outages.evaluateAll();
-  c.services.insights.refreshAll();
-  const counts = db.prepare(`SELECT (SELECT COUNT(*) FROM speed_tests) tests, (SELECT COUNT(*) FROM complaints) complaints,
-    (SELECT COUNT(*) FROM complaints WHERE status <> 'resolved') open, (SELECT COUNT(*) FROM insights WHERE is_active = 1) insights`).get() as any;
+  await c.services.outages.evaluateAll();
+  await c.services.insights.refreshAll();
+  const counts = (
+    await db.query<any>(`SELECT (SELECT COUNT(*)::int FROM speed_tests) AS tests, (SELECT COUNT(*)::int FROM complaints) AS complaints,
+    (SELECT COUNT(*)::int FROM complaints WHERE status <> 'resolved') AS open, (SELECT COUNT(*)::int FROM insights WHERE is_active) AS insights`)
+  ).rows[0];
   if (!opts.quiet) {
     console.log(`\nSeeded ${counts.tests} speed tests, ${counts.complaints} complaints (${counts.open} open), ${counts.insights} active insights.`);
     if (opts.accounts) {
@@ -261,8 +281,16 @@ export function seed(c: Container, opts: { force?: boolean; quiet?: boolean; acc
 }
 
 if (require.main === module) {
-  const c = createContainer(loadConfig());
-  seed(c, { force: process.argv.includes('--force'), accounts: process.argv.includes('--accounts') });
-  c.sse.close();
-  c.db.close();
+  (async () => {
+    const c = await createContainer(loadConfig());
+    try {
+      await seed(c, { force: process.argv.includes('--force'), accounts: process.argv.includes('--accounts') });
+    } finally {
+      c.sse.close();
+      await c.db.close();
+    }
+  })().catch((err) => {
+    console.error('Seed failed:', err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
 }

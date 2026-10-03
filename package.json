@@ -25,7 +25,8 @@
     "test": "vitest run",
     "test:e2e": "npm run test:e2e -w @campus/web",
     "lint": "eslint . --ext .ts,.tsx",
-    "typecheck": "tsc -p packages/shared --noEmit && tsc -p apps/server --noEmit && tsc -p apps/web --noEmit && tsc -p tsconfig.functions.json"
+    "typecheck": "tsc -p packages/shared --noEmit && tsc -p apps/server --noEmit && tsc -p apps/web --noEmit && tsc -p tsconfig.functions.json",
+    "migrate:data": "npm run migrate:data -w @campus/server --"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^7.18.0",

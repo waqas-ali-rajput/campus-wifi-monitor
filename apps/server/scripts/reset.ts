@@ -1,15 +1,20 @@
-import { existsSync, rmSync } from 'node:fs';
+/** npm run reset — wipes every table in DATABASE_URL and re-seeds the demo data. Destructive! */
 import { loadConfig } from '../src/config';
 import { createContainer } from '../src/container';
 import { seed } from './seed';
 
-const cfg = loadConfig();
-for (const suffix of ['', '-wal', '-shm']) {
-  const f = cfg.dbPath + suffix;
-  if (existsSync(f)) rmSync(f);
+async function main() {
+  const c = await createContainer(loadConfig());
+  try {
+    console.log('Deleting all data and re-seeding…');
+    await seed(c, { force: true });
+  } finally {
+    c.sse.close();
+    await c.db.close();
+  }
 }
-console.log('Deleted the database. Migrating and seeding…');
-const c = createContainer(cfg);
-seed(c);
-c.sse.close();
-c.db.close();
+
+main().catch((err) => {
+  console.error('Reset failed:', err instanceof Error ? err.message : err);
+  process.exit(1);
+});

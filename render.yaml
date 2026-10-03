@@ -1,5 +1,5 @@
-# Single-instance Node service with a persistent disk for the SQLite database.
-# The disk keeps accounts, test results, and complaints across deploys and restarts.
+# Single-instance Node service. All data lives in Neon Postgres (DATABASE_URL), so no
+# persistent disk is needed and accounts/tests/complaints survive deploys and restarts.
 services:
   - type: web
     name: campus-wifi-monitor
@@ -10,10 +10,6 @@ services:
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
-    disk:
-      name: campus-wifi-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
@@ -21,9 +17,9 @@ services:
         value: 0.0.0.0
       - key: NODE_VERSION
         value: 22.23.3
-      # SQLite lives on the persistent disk above; keep its WAL sidecars with it.
-      - key: DB_PATH
-        value: /opt/render/project/src/data/campus-wifi.db
+      # Neon pooled connection string. Set the value in the Render dashboard (never commit it).
+      - key: DATABASE_URL
+        sync: false
       - key: TRUST_PROXY_HOPS
         value: 1
       # One instance behind Render's proxy, so SSE and the in-process scheduler work normally.

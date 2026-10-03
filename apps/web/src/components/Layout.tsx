@@ -178,14 +178,9 @@ export function Layout() {
         </button>
         <span className="font-cond text-[16px] font-semibold lg:hidden">Campus Wi-Fi</span>
         <div className="flex-1" />
-        {cfg.data?.disableEventStream ? <span className="rounded-full border border-[#e9cf83] bg-[#fff8e5] px-2.5 py-1 text-[12px] font-medium text-[#674f0b]" title="Live updates need a long-running server connection">Demo · refresh for updates</span> : <LiveIndicator state={live} />}
+        {cfg.data?.disableEventStream ? <span className="rounded-full border border-[#e9cf83] bg-[#fff8e5] px-2.5 py-1 text-[12px] font-medium text-[#674f0b]" title="Live updates need a long-running server connection">Refresh for updates</span> : <LiveIndicator state={live} />}
         <NotificationBell />
       </header>
-      {cfg.data?.disableEventStream && (
-        <div className="border-b border-[#e9cf83] bg-[#fff8e5] px-4 py-2 text-[13px] text-[#674f0b] sm:px-6" role="status">
-          Vercel disposable demo: SQLite data can reset or differ between requests. Do not enter real or sensitive information.
-        </div>
-      )}
       {!reachable && (
         <div className="flex items-center gap-2 bg-st-critical px-4 py-2 text-sm text-white sm:px-6" role="alert">
           <WifiOff className="h-4 w-4" /> Cannot reach the server. Check your Wi-Fi connection.

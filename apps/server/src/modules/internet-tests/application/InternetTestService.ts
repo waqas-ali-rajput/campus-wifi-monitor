@@ -14,7 +14,7 @@ export interface InternetTestInput {
 export class InternetTestService {
   constructor(private repo: InternetTestRepo, private clock: Clock) {}
 
-  submit(userId: string, input: InternetTestInput): InternetTestDTO {
+  async submit(userId: string, input: InternetTestInput): Promise<InternetTestDTO> {
     const test: InternetTestDTO = {
       test_id: newId(),
       user_id: userId,
@@ -27,11 +27,11 @@ export class InternetTestService {
       jitter_ms: round2(input.jitter_ms),
       tested_at: this.clock.now().toISOString(),
     };
-    this.repo.insert(test);
+    await this.repo.insert(test);
     return test;
   }
 
-  list(userId: string, limit = 10): InternetTestDTO[] {
+  list(userId: string, limit = 10): Promise<InternetTestDTO[]> {
     return this.repo.list(userId, limit);
   }
 }

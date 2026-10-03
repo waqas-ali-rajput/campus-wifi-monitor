@@ -42,14 +42,14 @@ export class InsightsService {
   }
 
   /** §9.1 a/b/c run immediately for the tested location. Returns messages of newly raised insights. */
-  onNewTest(test: SpeedTestDTO): string[] {
+  async onNewTest(test: SpeedTestDTO): Promise<string[]> {
     const now = this.clock.now();
     const at = now.toISOString();
-    const cfg = this.settings.insights();
-    const loc = this.locations.byId(test.location_id);
+    const cfg = await this.settings.insights();
+    const loc = await this.locations.byId(test.location_id);
     if (!loc) return [];
     const raised: string[] = [];
-    const history = this.tests.rowsSince(daysAgo(now, Math.max(cfg.anomaly.baselineDays, cfg.trend.days)), { location_id: test.location_id });
+    const history = await this.tests.rowsSince(daysAgo(now, Math.max(cfg.anomaly.baselineDays, cfg.trend.days)), { location_id: test.location_id });
 
     // (a) anomaly
     const samples = history
@@ -58,22 +58,22 @@ export class InsightsService {
     const baseline = selectBaseline(samples, localParts(test.tested_at, this.tz).hour, now, cfg);
     const anomaly = baseline ? detectAnomaly({ download: test.download_speed, ping: test.ping, loss: test.packet_loss }, baseline, loc.location_name, cfg) : null;
     if (anomaly) {
-      if (this.repo.upsert('anomaly', loc.location_id, 'warning', anomaly.message, { ...anomaly, normalStreak: 0, test_id: test.test_id }, at))
+      if (await this.repo.upsert('anomaly', loc.location_id, 'warning', anomaly.message, { ...anomaly, normalStreak: 0, test_id: test.test_id }, at))
         raised.push(anomaly.message);
       this.emit('anomaly', loc.location_id);
     } else {
-      const cur = this.repo.activeOne('anomaly', loc.location_id);
+      const cur = await this.repo.activeOne('anomaly', loc.location_id);
       if (cur) {
         const data = JSON.parse(cur.data_json || '{}');
         const streak = (data.normalStreak ?? 0) + 1;
-        if (streak >= 2) this.repo.deactivate('anomaly', loc.location_id, at);
-        else this.repo.updateData(cur.insight_id, { ...data, normalStreak: streak }, at);
+        if (streak >= 2) await this.repo.deactivate('anomaly', loc.location_id, at);
+        else await this.repo.updateData(cur.insight_id, { ...data, normalStreak: streak }, at);
         this.emit('anomaly', loc.location_id);
       }
     }
 
     // (b) automatic problem detection
-    this.evaluateProblem(loc.location_id, loc.location_name, raised);
+    await this.evaluateProblem(loc.location_id, loc.location_name, raised);
 
     // (c) performance trend detection
     const scores = history.map((h) => ({ s: h.health_score, t: h.tested_at })).reverse(); // newest first
@@ -82,77 +82,76 @@ export class InsightsService {
     const trend = detectTrendDrop(recent, prev, cfg);
     if (trend) {
       const msg = trend.message;
-      if (this.repo.upsert('trend_drop', loc.location_id, 'warning', msg, { recentMean: round(trend.recentMean), usualMean: round(trend.usualMean) }, at))
+      if (await this.repo.upsert('trend_drop', loc.location_id, 'warning', msg, { recentMean: round(trend.recentMean), usualMean: round(trend.usualMean) }, at))
         raised.push(`${loc.location_name}: ${msg}`);
       this.emit('trend_drop', loc.location_id);
-    } else if (this.repo.deactivate('trend_drop', loc.location_id, at)) this.emit('trend_drop', loc.location_id);
+    } else if (await this.repo.deactivate('trend_drop', loc.location_id, at)) this.emit('trend_drop', loc.location_id);
 
     return raised;
   }
 
-  private evaluateProblem(locationId: string, name: string, raised: string[] = []) {
+  private async evaluateProblem(locationId: string, name: string, raised: string[] = []) {
     const now = this.clock.now();
     const at = now.toISOString();
-    const cfg = this.settings.insights();
-    const loc = this.locations.byId(locationId)!;
-    const statuses = this.tests
-      .rowsSince(hoursAgo(now, cfg.problem.windowHours), { location_id: locationId })
+    const cfg = await this.settings.insights();
+    const loc = (await this.locations.byId(locationId))!;
+    const statuses = (await this.tests.rowsSince(hoursAgo(now, cfg.problem.windowHours), { location_id: locationId }))
       .reverse()
       .map((r) => r.health_status as HealthStatus);
     const problem = detectProblem(statuses, name, cfg);
     const fairOrBetter = ['excellent', 'good', 'fair'].includes(loc.current_status);
     if (problem && !fairOrBetter) {
-      if (this.repo.upsert('problem_detected', locationId, problem.severity, problem.message, { poorCount: problem.poorCount, of: Math.min(statuses.length, cfg.problem.lookback) }, at))
+      if (await this.repo.upsert('problem_detected', locationId, problem.severity, problem.message, { poorCount: problem.poorCount, of: Math.min(statuses.length, cfg.problem.lookback) }, at))
         raised.push(problem.message);
       this.emit('problem_detected', locationId);
-    } else if ((fairOrBetter || !problem) && this.repo.deactivate('problem_detected', locationId, at)) {
+    } else if ((fairOrBetter || !problem) && (await this.repo.deactivate('problem_detected', locationId, at))) {
       this.emit('problem_detected', locationId);
     }
   }
 
   /** §9.3–9.6 recompute (scheduler, every 5 min). */
-  refreshAll() {
+  async refreshAll() {
     const now = this.clock.now();
     const at = now.toISOString();
-    for (const l of this.locations.all()) {
-      this.evaluateProblem(l.location_id, l.location_name);
-      const p = this.riskFor(l.location_id, l.location_name);
+    for (const l of await this.locations.all()) {
+      await this.evaluateProblem(l.location_id, l.location_name);
+      const p = await this.riskFor(l.location_id, l.location_name);
       if (p && p.level !== 'low') {
-        this.repo.upsert('outage_risk', l.location_id, p.level === 'high' ? 'critical' : 'warning', p.message, p, at);
+        await this.repo.upsert('outage_risk', l.location_id, p.level === 'high' ? 'critical' : 'warning', p.message, p, at);
         this.emit('outage_risk', l.location_id);
-      } else if (this.repo.deactivate('outage_risk', l.location_id, at)) this.emit('outage_risk', l.location_id);
+      } else if (await this.repo.deactivate('outage_risk', l.location_id, at)) this.emit('outage_risk', l.location_id);
     }
-    const f = this.predictions().campus;
+    const f = (await this.predictions()).campus;
     if (f.dips.length) {
       const d = f.dips[0]!;
-      this.repo.upsert('peak_forecast', null, 'info', `Wi-Fi performance is likely to dip between ${d.label} in the next 24 hours (expected score ${Math.round(d.expectedScore)}).`, f.dips, at);
-    } else this.repo.deactivate('peak_forecast', null, at);
+      await this.repo.upsert('peak_forecast', null, 'info', `Wi-Fi performance is likely to dip between ${d.label} in the next 24 hours (expected score ${Math.round(d.expectedScore)}).`, f.dips, at);
+    } else await this.repo.deactivate('peak_forecast', null, at);
   }
 
-  private riskFor(locationId: string, name: string) {
+  private async riskFor(locationId: string, name: string) {
     const now = this.clock.now();
-    const last10 = this.tests.rowsSince(daysAgo(now, 2), { location_id: locationId }).slice(-10);
-    const tests3h = this.tests.rowsSince(hoursAgo(now, 3), { location_id: locationId }).length;
-    const failures3h = this.tests.failuresSince(hoursAgo(now, 3), locationId).length;
-    const complaints3h = this.repo.complaintsSince(hoursAgo(now, 3)).filter((c) => c.location_id === locationId).length;
-    const anomalies6h = this.repo.countRecent('anomaly', locationId, hoursAgo(now, 6));
+    const last10 = (await this.tests.rowsSince(daysAgo(now, 2), { location_id: locationId })).slice(-10);
+    const tests3h = (await this.tests.rowsSince(hoursAgo(now, 3), { location_id: locationId })).length;
+    const failures3h = (await this.tests.failuresSince(hoursAgo(now, 3), locationId)).length;
+    const complaints3h = (await this.repo.complaintsSince(hoursAgo(now, 3))).filter((c) => c.location_id === locationId).length;
+    const anomalies6h = await this.repo.countRecent('anomaly', locationId, hoursAgo(now, 6));
     const r = outageRisk({ scoresOldestFirst: last10.map((t) => t.health_score), tests3h, failures3h, complaints3h, anomalies6h });
     if (!r) return null;
     return { ...r, location_id: locationId, location_name: name, complaints3h, failures3h, message: riskMessage(name, r, complaints3h) };
   }
 
-  list(locationId?: string) {
-    return this.repo.active(locationId).filter((i) => i.kind !== 'summary' && i.kind !== 'recommendation');
+  async list(locationId?: string) {
+    return (await this.repo.active(locationId)).filter((i) => i.kind !== 'summary' && i.kind !== 'recommendation');
   }
 
   /** §9.6 ranked "inspect first" list (also "Most problematic locations"). */
-  recommendations() {
+  async recommendations() {
     const now = this.clock.now();
-    const rows = this.tests.rowsSince(daysAgo(now, 14));
-    const complaints = this.repo.complaintsSince(daysAgo(now, 14));
-    const activeOutages = new Set(this.outages.active().map((o) => o.location_id));
+    const rows = await this.tests.rowsSince(daysAgo(now, 14));
+    const complaints = await this.repo.complaintsSince(daysAgo(now, 14));
+    const activeOutages = new Set((await this.outages.active()).map((o) => o.location_id));
     const since7 = daysAgo(now, 7);
-    const items = this.locations.all().map((l) => {
+    const items = (await this.locations.all()).map((l) => {
       const mine = rows.filter((r) => r.location_id === l.location_id);
       const last7 = mine.filter((r) => r.tested_at >= since7);
       const poorShare = last7.length ? last7.filter((r) => r.health_status === 'poor' || r.health_status === 'critical').length / last7.length : 0;
@@ -190,27 +189,26 @@ export class InsightsService {
   }
 
   /** §9.3 + §9.4 */
-  predictions(locationId?: string) {
+  async predictions(locationId?: string) {
     const now = this.clock.now();
     const lp = localParts(now, this.tz);
-    const rows = this.tests.rowsSince(daysAgo(now, 28), locationId ? { location_id: locationId } : {});
+    const rows = await this.tests.rowsSince(daysAgo(now, 28), locationId ? { location_id: locationId } : {});
     const samples = rows.map((r) => {
       const p = localParts(r.tested_at, this.tz);
       return { dow: p.dow, hour: p.hour, score: r.health_score, download: r.download_speed };
     });
     const campus = forecastNext24h(samples, lp.dow, lp.hour);
-    const risks = this.locations
-      .all()
-      .filter((l) => !locationId || l.location_id === locationId)
-      .map((l) => this.riskFor(l.location_id, l.location_name) ?? { location_id: l.location_id, location_name: l.location_name, risk: 0, level: 'low' as const, message: 'Not enough recent data for a prediction.', insufficient: true })
-      .sort((a, b) => b.risk - a.risk);
+    const risks = [];
+    for (const l of (await this.locations.all()).filter((x) => !locationId || x.location_id === locationId))
+      risks.push((await this.riskFor(l.location_id, l.location_name)) ?? { location_id: l.location_id, location_name: l.location_name, risk: 0, level: 'low' as const, message: 'Not enough recent data for a prediction.', insufficient: true });
+    risks.sort((a, b) => b.risk - a.risk);
     return { campus, risks };
   }
 
   /** §9.5 AI network summary. */
   async summary() {
     const now = this.clock.now();
-    const rows = this.tests.rowsSince(startOfLocalDay(now, this.tz, 7).toISOString());
+    const rows = await this.tests.rowsSince(startOfLocalDay(now, this.tz, 7).toISOString());
     const byLoc = new Map<string, typeof rows>();
     for (const r of rows) byLoc.set(r.location_name, [...(byLoc.get(r.location_name) ?? []), r]);
     const locationSentences: Array<{ location: string; sentence: string; startHour: number; endHour: number; days: number }> = [];
@@ -225,16 +223,16 @@ export class InsightsService {
       }));
       for (const w of findRecurringPoorWindows(name, samples)) locationSentences.push({ location: name, ...w });
     }
-    const locs = this.locations.all();
+    const locs = await this.locations.all();
     const poor = locs.filter((l) => l.current_status === 'poor' || l.current_status === 'critical');
     const scored = locs.filter((l) => l.current_score != null).sort((a, b) => a.current_score! - b.current_score!);
-    const complaints = this.repo.complaintsSince(startOfLocalDay(now, this.tz, 7).toISOString());
+    const complaints = await this.repo.complaintsSince(startOfLocalDay(now, this.tz, 7).toISOString());
     const todayStart = startOfLocalDay(now, this.tz).toISOString();
     const today = complaints.filter((c) => c.created_at >= todayStart).length;
     const campus = campusSentences({
       poorLocations: poor.map((l) => l.location_name),
       worst: scored[0] ? { name: scored[0].location_name, score: scored[0].current_score!, status: STATUS_LABELS[scored[0].current_status] } : null,
-      activeOutages: this.outages.active().map((o) => o.message),
+      activeOutages: (await this.outages.active()).map((o) => o.message),
       complaintsToday: today,
       complaintsDailyAvg7d: (complaints.length - today) / 7,
     });

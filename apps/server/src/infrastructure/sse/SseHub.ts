@@ -14,6 +14,8 @@ export class SseHub implements EventPublisher {
   private conns = new Map<number, Conn>();
   private seq = 0;
   private heartbeat: NodeJS.Timeout;
+  /** Notification ids already pushed in-process, so the external-write watcher never re-sends them. */
+  private sentNotifications = new Set<string>();
 
   constructor() {
     this.heartbeat = setInterval(() => {
@@ -37,6 +39,14 @@ export class SseHub implements EventPublisher {
   }
 
   publish(event: string, data: unknown, audience: Audience = { all: true }): void {
+    if (event === 'notification') {
+      const id = (data as { notification_id?: string } | null)?.notification_id;
+      if (id) {
+        if (this.sentNotifications.has(id)) return;
+        if (this.sentNotifications.size > 5000) this.sentNotifications.clear();
+        this.sentNotifications.add(id);
+      }
+    }
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const c of this.conns.values()) {
       const match =
