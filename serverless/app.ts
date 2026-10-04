@@ -13,7 +13,14 @@ let handler: Promise<ReturnType<typeof createApp>> | undefined;
 export function getServerlessApp() {
   handler ??= (async () => {
     // Many concurrent function instances share one database: keep each instance's pool small.
-    const config = loadConfig({ host: '127.0.0.1', trustProxyHops: 1, pgPoolMax: Number(process.env.PG_POOL_MAX ?? 3) });
+    // Vercel functions are short-lived and cannot hold an SSE request open, so live updates
+    // are switched off here structurally rather than relying on someone setting an env var.
+    const config = loadConfig({
+      host: '127.0.0.1',
+      trustProxyHops: 1,
+      pgPoolMax: Number(process.env.PG_POOL_MAX ?? 3),
+      disableEventStream: true,
+    });
     const container = await createContainer(config);
     await warmUp(container);
     return createApp(container, { webDist: 'apps/web/dist' });

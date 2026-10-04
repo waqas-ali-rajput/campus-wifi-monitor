@@ -6,7 +6,8 @@ import {
 } from 'lucide-react';
 import { ROLE_LABELS, type NotificationDTO, type Permission } from '@campus/shared';
 import { useAuth } from '../auth/AuthProvider';
-import { useEventStream } from '../realtime/useEventStream';
+import { useEventStream, type LiveState } from '../realtime/useEventStream';
+import { useAutoRefresh } from '../realtime/useAutoRefresh';
 import { onReachability } from '../api/client';
 import { useAppConfig } from '../api/hooks';
 import { setCampusTz } from '../lib/format';
@@ -147,14 +148,19 @@ export function Layout() {
   }, []);
   useEffect(() => setDrawer(false), [loc.pathname]);
 
-  const live = useEventStream(!!user && !cfg.data?.disableEventStream, (n: NotificationDTO) =>
+  const toastFor = (n: NotificationDTO) =>
     pushToast({
       title: n.title,
       body: n.body,
       tone: n.type === 'outage_detected' || n.type === 'location_degraded' ? 'danger' : n.type === 'network_recovered' || n.type === 'complaint_resolved' ? 'ok' : 'info',
       onClick: n.entity_type === 'complaint' ? () => navRef.current(`/complaints/${n.entity_id}`) : n.entity_type === 'outage' ? () => navRef.current('/outages') : undefined,
-    }),
-  );
+    });
+
+  // Push mode streams over SSE; poll mode stands in where the deployment cannot hold it open.
+  const pollMode = !!cfg.data?.disableEventStream;
+  const pushMode = !!cfg.data && !cfg.data.disableEventStream;
+  const live = useEventStream(!!user && pushMode, toastFor);
+  const auto = useAutoRefresh(!!user && pollMode, toastFor);
 
   return (
     <div className="min-h-screen lg:pl-[248px]">
@@ -178,7 +184,7 @@ export function Layout() {
         </button>
         <span className="font-cond text-[16px] font-semibold lg:hidden">Campus Wi-Fi</span>
         <div className="flex-1" />
-        {cfg.data?.disableEventStream ? <span className="rounded-full border border-[#e9cf83] bg-[#fff8e5] px-2.5 py-1 text-[12px] font-medium text-[#674f0b]" title="Live updates need a long-running server connection">Refresh for updates</span> : <LiveIndicator state={live} />}
+        {pollMode ? <AutoRefreshIndicator state={auto} /> : <LiveIndicator state={live} />}
         <NotificationBell />
       </header>
       {!reachable && (
@@ -194,7 +200,9 @@ export function Layout() {
   );
 }
 
-function LiveIndicator({ state }: { state: 'connecting' | 'live' | 'offline' }) {
+// 'unavailable' means SSE never delivered a "hello"; it shows as "Reconnecting" rather than
+// spinning forever. Poll mode never reaches this component.
+function LiveIndicator({ state }: { state: LiveState }) {
   const label = state === 'live' ? 'Live' : state === 'connecting' ? 'Connecting' : 'Reconnecting';
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-white px-2.5 py-1 text-[12px] font-medium text-ink-2" title="Live updates via server-sent events">
@@ -207,6 +215,23 @@ function LiveIndicator({ state }: { state: 'connecting' | 'live' | 'offline' }) 
         <Wifi className="h-3.5 w-3.5 text-ink-4" />
       )}
       {label}
+    </span>
+  );
+}
+
+/** Poll-mode counterpart to LiveIndicator: refreshing on an interval instead of streaming. */
+function AutoRefreshIndicator({ state }: { state: 'live' | 'paused' }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-white px-2.5 py-1 text-[12px] font-medium text-ink-2" title="Live updates via automatic refresh — this deployment cannot stream changes">
+      {state === 'live' ? (
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-pulseRing rounded-full bg-st-good" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-st-good" />
+        </span>
+      ) : (
+        <Wifi className="h-3.5 w-3.5 text-ink-4" />
+      )}
+      {state === 'live' ? 'Live · auto-refresh' : 'Paused'}
     </span>
   );
 }

@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { NotificationDTO } from '@campus/shared';
 
-export type LiveState = 'connecting' | 'live' | 'offline';
+export type LiveState = 'connecting' | 'live' | 'offline' | 'unavailable';
+
+/** Consecutive failed attempts before any "hello", after which the endpoint is treated as unsupported. */
+const UNAVAILABLE_AFTER = 3;
 
 /** SSE stream (§11.4) → invalidates TanStack Query keys and surfaces notifications as toasts. */
 export function useEventStream(enabled: boolean, onNotification: (n: NotificationDTO) => void) {
@@ -16,6 +19,11 @@ export function useEventStream(enabled: boolean, onNotification: (n: Notificatio
     const es = new EventSource('/api/events', { withCredentials: true });
     let wasOffline = false;
     let pending: number | undefined;
+    // Errors seen before the first "hello" mean the endpoint never worked here (e.g. a
+    // deployment that answers 501), which retrying cannot fix. Errors after "hello" are
+    // ordinary disconnects and still reconnect.
+    let failuresBeforeHello = 0;
+    let sawHello = false;
     const keys = new Set<string>();
     // coalesce bursts of events into one refetch round
     const invalidate = (...k: string[]) => {
@@ -27,11 +35,18 @@ export function useEventStream(enabled: boolean, onNotification: (n: Notificatio
       }, 250);
     };
     es.addEventListener('hello', () => {
+      sawHello = true;
       setState('live');
       if (wasOffline) qc.invalidateQueries();
       wasOffline = false;
     });
     es.onerror = () => {
+      if (!sawHello && ++failuresBeforeHello >= UNAVAILABLE_AFTER) {
+        // Stop before the browser's own retry keeps the badge spinning forever.
+        es.close();
+        setState('unavailable');
+        return;
+      }
       setState('offline');
       wasOffline = true;
     };

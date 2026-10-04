@@ -87,7 +87,7 @@ TEST_DATABASE_URL='postgresql://…' npm test
 
 Vercel runs the API as a serverless function backed by the same Neon database, so data is persistent and shared across instances. Live SSE updates and the in-process scheduled jobs are disabled there (functions are short-lived); statuses are refreshed when a function instance starts.
 
-Import the repository in Vercel (root of this repo) and set `NODE_ENV=production`, `DATABASE_URL` (Neon pooled string — or use Vercel's Neon integration, which sets it for you), a random `JWT_SECRET` (32+ characters), `TRUST_PROXY_HOPS=1`, and `DISABLE_EVENT_STREAM=true`. The schema is created on first request. The build does not seed data; create accounts with `bootstrap-admin` (below) from your own machine with the same `DATABASE_URL`.
+Import the repository in Vercel (root of this repo) and set `NODE_ENV=production`, `DATABASE_URL` (Neon pooled string — or use Vercel's Neon integration, which sets it for you), a random `JWT_SECRET` (32+ characters), and `TRUST_PROXY_HOPS=1`. Live updates are switched off automatically on Vercel, so no extra variable is needed. The schema is created on first request. The build does not seed data; create accounts with `bootstrap-admin` (below) from your own machine with the same `DATABASE_URL`.
 
 ## Creating the demo accounts on a fresh deployment
 
